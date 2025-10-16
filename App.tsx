@@ -65,17 +65,23 @@ function TabNavigator() {
       <Tab.Screen
         name="Week"
         component={WeekSchePage}
-        options={{ tabBarIcon: renderTabIcon('Week') }}
+        options={{ 
+          tabBarLabel: '일정',
+          tabBarIcon: renderTabIcon('Week') }}
       />
       <Tab.Screen
         name="Main"
         component={MainStack}
-        options={{ tabBarIcon: renderTabIcon('Main') }}
+        options={{ 
+          tabBarLabel: '처음으로',
+          tabBarIcon: renderTabIcon('Main') }}
       />
       <Tab.Screen
         name="Today"
         component={TodaySchePage}
-        options={{ tabBarIcon: renderTabIcon('Today') }}
+        options={{ 
+          tabBarLabel: '오늘의 시간표',
+          tabBarIcon: renderTabIcon('Today') }}
       />
     </Tab.Navigator>
   );

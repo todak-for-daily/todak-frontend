@@ -11,16 +11,24 @@ type MainStackParamList = {
   Settings: undefined;
 };
 
+
+
 const MainPage = () => {
   const navigation = useNavigation<NativeStackNavigationProp<MainStackParamList>>();
-  const { todaySchedule, loading, error } = useSchedule();
+  const { todaySchedules, loading, error } = useSchedule();
 
   // 시간 포맷팅 함수
   const formatTime = (startTime: Date, endTime: Date) => {
-    const formatTimeOnly = (date: Date) => {
-      return date.toTimeString().slice(0, 5); // HH:MM 형태로 변환
+    const formatTimeWithPeriod = (date: Date) => {
+      const hours = date.getHours();
+      const minutes = date.getMinutes();
+      const period = hours < 12 ? '오전' : '오후';
+      const formattedHour = hours % 12 === 0 ? 12 : hours % 12;
+      const formattedMinute = minutes.toString().padStart(2, '0');
+      return `${period} ${formattedHour}:${formattedMinute}`;
     };
-    return `${formatTimeOnly(startTime)} ~ ${formatTimeOnly(endTime)}`;
+
+  return `${formatTimeWithPeriod(startTime)} ~ ${formatTimeWithPeriod(endTime)}`;
   };
 
   const handleAnxietyRecord = () => {
@@ -47,14 +55,19 @@ const MainPage = () => {
           <Text style={styles.loadingText}>일정을 불러오는 중...</Text>
         ) : error ? (
           <Text style={styles.errorText}>일정을 불러올 수 없습니다.</Text>
-        ) : todaySchedule ? (
-          <>
-            <Text style={styles.scheduleTime}>
-              {formatTime(todaySchedule.scheStartTime, todaySchedule.scheEndTime)}
-            </Text>
-            <Text style={styles.scheduleName}>{todaySchedule.scheName}</Text>
-            <Text style={styles.schedulePlace}>{todaySchedule.schePlace}</Text>
-          </>
+        ) : todaySchedules.length > 0 ? (
+          todaySchedules.map(schedule => (
+            <View
+              key={schedule.id}
+              style={styles.scheduleItem}
+            >
+              <Text style={styles.scheduleTime}>
+                {formatTime(schedule.scheStartTime, schedule.scheEndTime)}
+              </Text>
+              <Text style={styles.scheduleName}>{schedule.scheName}</Text>
+              <Text style={styles.schedulePlace}>{schedule.schePlace}</Text>
+            </View>
+          ))
         ) : (
           <Text style={styles.noScheduleText}>오늘 일정이 없습니다.</Text>
         )}
@@ -100,6 +113,7 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#333',
     textAlign: 'left',
+    marginTop:10,
   },
   settingsIcon: {
     position: 'absolute',
@@ -128,19 +142,19 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   scheduleTime: {
-    fontSize: 16,
+    fontSize: 20,
     fontWeight: '600',
     color: '#333',
     marginBottom: 8,
   },
   scheduleName: {
-    fontSize: 18,
+    fontSize: 25,
     fontWeight: 'bold',
     color: '#333',
     marginBottom: 4,
   },
   schedulePlace: {
-    fontSize: 16,
+    fontSize: 20,
     color: '#555',
   },
   buttonsContainer: {
@@ -198,5 +212,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#888',
     textAlign: 'center',
+  },
+  scheduleItem: {
+    marginBottom: 12,
+    backgroundColor: '#fff',
+    padding: 16,
+    borderRadius: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+    alignItems: 'center',
+    width: '95%',
   },
 });
