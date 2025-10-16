@@ -123,3 +123,14 @@ ios/todak_frontend/Images.xcassets/
 
 # ✅ 패키지 매니저 충돌 방지
 package-lock.json
+
+Gemfile
+android/gradle/wrapper/gradle-wrapper.jar
+android/gradlew
+android/gradlew.bat
+ios/Podfile
+ios/todak_frontend.xcodeproj/
+ios/todak_frontend/Info.plist
+ios/todak_frontend/PrivacyInfo.xcprivacy
+ios/todak_frontend/LaunchScreen.storyboard
+assets/images/package.json
