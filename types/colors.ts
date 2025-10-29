@@ -1,4 +1,13 @@
-export const scheduleColors = [
-  '#FF6B6B', '#d2a800ff', '#6BCB77', '#4D96FF',
-  '#FF6EC7', '#845EC2', '#9b9b9bff', '#59411bff',
-];
+export const COLOR_NAME_MAP: { [key: string]: string } = {
+    'red': '#FF6B6B',
+    'green': '#6BCB77',
+    'blue': '#4D96FF',
+    'yellow': '#FFD700', 
+    'purple': '#9370DB', 
+    'gray': '#9B9B9BFF',
+    'brown': '#A0522D', 
+    'pink': '#FF6EC7',
+};
+
+
+export const scheduleColors: string[] = Object.values(COLOR_NAME_MAP);
