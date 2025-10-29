@@ -1,19 +1,11 @@
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { View, Text, StyleSheet } from 'react-native';
 
 const AnxietyRecord = () => {
-  const navigation = useNavigation();
 
-  const handleGoBack = () => {
-    navigation.goBack();
-  };
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <TouchableOpacity onPress={handleGoBack} style={styles.backButton}>
-          <Text style={styles.backButtonText}>← 뒤로가기</Text>
-        </TouchableOpacity>
         <Text style={styles.title}>불안기록</Text>
       </View>
 
@@ -21,13 +13,6 @@ const AnxietyRecord = () => {
         <Text style={styles.pageDescription}>
           불안한 감정을 기록하고 관리하는 공간입니다.
         </Text>
-        
-        <View style={styles.featureList}>
-          <Text style={styles.featureItem}>📝 불안 상황 기록</Text>
-          <Text style={styles.featureItem}>📊 불안 정도 측정</Text>
-          <Text style={styles.featureItem}>📈 불안 패턴 분석</Text>
-          <Text style={styles.featureItem}>💡 대처 방법 제안</Text>
-        </View>
 
         <Text style={styles.note}>
           * 이 페이지는 임시 페이지입니다. 실제 기능은 추후 구현 예정입니다.

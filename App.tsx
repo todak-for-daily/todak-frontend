@@ -1,29 +1,37 @@
 import { StatusBar, useColorScheme } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 
 import LoginPage from './screens/login';
 import MainPage from './screens/main';
-import TodaySchePage from './screens/todaySchedule';
-import WeekSchePage from './screens/weekSchedule';
+//import TodaySchePage from './screens/todaySchedule';
+import WeeklySchedule from './screens/weekSchedule';
 import AnxietyRecord from './screens/anxietyRecord';
 import PlaceSimulation from './screens/placeSimulation';
+import MonthlySchedule from './screens/monthlySchedule';
+import RoutinePage from './screens/routineSchedule';
 import Settings from './screens/settings';
 import { ScheduleProvider } from './contexts/ScheduleContext';
+import { WEB_CLIENT_ID } from '@env';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 
 const getIconName = (routeName: string) => {
-  if (routeName === 'Week') return 'calendar-month-outline';
+  if (routeName === 'Routine') return 'calendar-month-outline';
   if (routeName === 'Main') return 'home-variant-outline';
-  if (routeName === 'Today') return 'check-circle-outline';
+  if (routeName === 'Monthly') return 'check-circle-outline';
   return 'home-variant-outline';
 };
+
+GoogleSignin.configure({
+  webClientId: WEB_CLIENT_ID,
+  offlineAccess: true,
+});
 
 const renderTabIcon =
   (routeName: string) =>
@@ -55,6 +63,11 @@ function MainStack() {
         component={Settings} 
         options={{ headerShown: false }}
       />
+       <Stack.Screen 
+        name="WeeklySchedule" 
+        component={WeeklySchedule} 
+        options={{ headerShown: false }}
+      />
     </Stack.Navigator>
   );
 }
@@ -63,11 +76,11 @@ function TabNavigator() {
   return (
     <Tab.Navigator initialRouteName='Main' screenOptions={{ headerShown: false }}>
       <Tab.Screen
-        name="Week"
-        component={WeekSchePage}
+        name="Routine"
+        component={RoutinePage}
         options={{ 
-          tabBarLabel: '일정',
-          tabBarIcon: renderTabIcon('Week') }}
+          tabBarLabel: '매주 하는 일',
+          tabBarIcon: renderTabIcon('Routine') }}
       />
       <Tab.Screen
         name="Main"
@@ -77,11 +90,11 @@ function TabNavigator() {
           tabBarIcon: renderTabIcon('Main') }}
       />
       <Tab.Screen
-        name="Today"
-        component={TodaySchePage}
+        name="Monthly"
+        component={MonthlySchedule}
         options={{ 
-          tabBarLabel: '오늘의 시간표',
-          tabBarIcon: renderTabIcon('Today') }}
+          tabBarLabel: '이번 달 시간표',
+          tabBarIcon: renderTabIcon('Monthly') }}
       />
     </Tab.Navigator>
   );
@@ -104,6 +117,11 @@ function App() {
           <Stack.Screen
             name="Tabs"
             component={TabNavigator}
+            options={{ headerShown: false }}
+          />
+        <Stack.Screen 
+            name="WeeklySchedule" 
+            component={WeeklySchedule} 
             options={{ headerShown: false }}
           />
           </Stack.Navigator>

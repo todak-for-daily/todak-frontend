@@ -4,6 +4,7 @@
 
 # Xcode
 #
+.bundle/
 build/
 *.pbxuser
 !default.pbxuser
@@ -120,9 +121,6 @@ ios/todak_frontend.xcworkspace/
 android/app/src/main/res/mipmap-*/ic_launcher*.png
 assets/icons/
 ios/todak_frontend/Images.xcassets/
-
-# ✅ 패키지 매니저 충돌 방지
-package-lock.json
 
 Gemfile
 android/gradle/wrapper/gradle-wrapper.jar
