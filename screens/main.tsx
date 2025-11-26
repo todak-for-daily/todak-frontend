@@ -1,25 +1,21 @@
-import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView } from 'react-native';
+import React, { useMemo, useState, useEffect } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, ScrollView, Image } from 'react-native';
+import FeatherIcon from 'react-native-vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import TTS from 'react-native-tts';
+import { speakText, stopSpeaking } from '../utils/textToSpeech';
 import { useSchedule } from '../contexts/ScheduleContext';
-
-// Context에서 사용하는 데이터 타입 정의 (참고용)
-interface ApiSchedule {
-    id: number;
-    date: string;
-    startTime: string; // HH:mm:ss 형식
-    endTime: string;    // HH:mm:ss 형식
-    title: string;
-    color: string; // Hex 코드 또는 유효한 색상 문자열
-    location: string;
-}
+import { useWeeklySchedule } from '../contexts/WeeklyScheduleContext';
+import { getSchedulesForDate } from '../utils/scheduleMerger';
+import { useAuth } from '../contexts/AuthContext';
 
 type MainStackParamList = {
     MainPage: undefined;
-    AnxietyRecord: undefined;
+    AnxietyInputScreen: undefined;
     PlaceSimulation: undefined;
     Settings: undefined;
+    EmotionReport: { employeeEmail?: string; employeeName?: string };
 };
 
 
@@ -41,17 +37,65 @@ const formatApiTime = (startTime: string, endTime: string) => {
 
 const MainPage = () => {
     const navigation = useNavigation<NativeStackNavigationProp<MainStackParamList>>();
+    const { userProfile, userRole } = useAuth();
     
-    const { schedules, loading, error } = useSchedule();
-    const currentDayIndex = new Date().getDay();
-    const todayDateStr = new Date().toISOString().split('T')[0];
-    const todaySchedules: ApiSchedule[] = (schedules[currentDayIndex] || []).filter(
-        schedule => schedule.date === todayDateStr
-    );
+    // 디버깅: userProfile 변경 시 로그 출력
+    useEffect(() => {
+        console.log('📱 [MainPage] userProfile 업데이트:', JSON.stringify(userProfile, null, 2));
+        console.log('📱 [MainPage] userRole:', userRole);
+    }, [userProfile, userRole]);
+    const [isSpeaking, setIsSpeaking] = useState(false);
+    
+    const { rawSchedules: oneTimeSchedules, loading: loadingOneTime, error: errorOneTime } = useSchedule();
+    const { rawWeeklySchedules, loading: loadingWeekly, error: errorWeekly } = useWeeklySchedule();
+    
+    const loading = loadingOneTime || loadingWeekly;
+    const error = errorOneTime || errorWeekly;
+    const isEmployee = userRole === '기업 재직자';
+    
+    // 오늘 날짜의 병합된 스케줄 가져오기
+    const todaySchedules = useMemo(() => {
+        const today = new Date();
+        return getSchedulesForDate(today, rawWeeklySchedules, oneTimeSchedules);
+    }, [rawWeeklySchedules, oneTimeSchedules]);
+
+    // TTS 완료 이벤트 리스너
+    useEffect(() => {
+        TTS.addEventListener('tts-finish', () => {
+            setIsSpeaking(false);
+        });
+        TTS.addEventListener('tts-cancel', () => {
+            setIsSpeaking(false);
+        });
+    }, []);
+
+    // TTS로 모든 일정 읽기
+    const handleReadAllSchedules = async () => {
+        if (isSpeaking) {
+            await stopSpeaking();
+            setIsSpeaking(false);
+            return;
+        }
+
+        if (todaySchedules.length === 0) {
+            await speakText('오늘 일정이 없습니다.');
+            setIsSpeaking(true);
+            return;
+        }
+
+        const scheduleTexts = todaySchedules.map((schedule, index) => {
+            const timeText = formatApiTime(schedule.startTime, schedule.endTime);
+            return `${index + 1}. ${schedule.title}. ${timeText}. ${schedule.location || '장소 정보 없음'}`;
+        });
+
+        const fullText = `오늘의 일정. ${scheduleTexts.join('. ')}`;
+        setIsSpeaking(true);
+        await speakText(fullText);
+    };
 
 
     const handleAnxietyRecord = () => {
-        navigation.navigate('AnxietyRecord');
+        navigation.navigate('AnxietyInputScreen');
     };
 
     const handlePlaceSimulation = () => {
@@ -64,13 +108,61 @@ const MainPage = () => {
             {/* 제목과 설정 아이콘 */}
             <View style={styles.header}>
                 <Text style={styles.title}>오늘의 시간표</Text>
-                <TouchableOpacity style={styles.settingsIcon} onPress={() => navigation.navigate('Settings')}>
-                    <Text style={styles.settingsIconText}>⚙️</Text>
-                </TouchableOpacity>
+                <View style={styles.headerIcons}>
+                    {userRole !== '관리자' && (
+                        <>
+                            <TouchableOpacity 
+                                style={styles.headerIcon} 
+                                onPress={() => navigation.navigate('EmotionReport', {})}
+                            >
+                                <FeatherIcon name="bar-chart-2" size={24} color="#000" />
+                            </TouchableOpacity>
+                            <TouchableOpacity 
+                                style={styles.headerIcon} 
+                                onPress={() => navigation.navigate('Settings')}
+                            >
+                                <FeatherIcon name="settings" size={28} color="#000" />
+                            </TouchableOpacity>
+                        </>
+                    )}
+                </View>
             </View>
+
+            {/* 기업 재직자 프로필 사진 */}
+            {isEmployee && userProfile && (
+                <View style={styles.profileSection}>
+                    {userProfile.avatarUrl ? (
+                        <Image source={{ uri: userProfile.avatarUrl }} style={styles.profileImage} />
+                    ) : (
+                        <View style={styles.profilePlaceholder}>
+                            <Text style={styles.profilePlaceholderText}>
+                                {userProfile.name ? userProfile.name.charAt(0) : '나'}
+                            </Text>
+                        </View>
+                    )}
+                    <Text style={styles.profileName}>{userProfile.name}님, 안녕하세요!</Text>
+                </View>
+            )}
 
             {/* 일정 정보 영역 */}
             <View style={styles.outerScheduleContainer}>
+                <View style={styles.scheduleHeader}>
+                    <Text style={styles.scheduleHeaderTitle}>오늘의 일정</Text>
+                    <TouchableOpacity
+                        style={styles.ttsButton}
+                        onPress={handleReadAllSchedules}
+                        activeOpacity={0.7}
+                    >
+                        <FeatherIcon
+                            name={isSpeaking ? 'volume-2' : 'volume-1'}
+                            size={18}
+                            color={isSpeaking ? '#FFA000' : '#666'}
+                        />
+                        <Text style={styles.ttsButtonText}>
+                            {isSpeaking ? '읽는 중...' : '전체 읽기'}
+                        </Text>
+                    </TouchableOpacity>
+                </View>
                 {loading ? (
                     <ActivityIndicator size="large" color="#FFC364" />
                 ) : error ? (
@@ -86,10 +178,10 @@ const MainPage = () => {
                                 key={schedule.id}
                                 style={styles.scheduleItem}
                             >
-                                {/* 1. 색상 막대 추가 */}
+                                {/* 색상 막대 */}
                                 <View style={[styles.colorBar, { backgroundColor: schedule.color }]} />
 
-                                {/* 2. 내용 컨테이너 추가 */}
+                                {/* 내용 컨테이너 */}
                                 <View style={styles.scheduleContent}>
                                     <Text style={styles.scheduleTime}>
                                         {formatApiTime(schedule.startTime, schedule.endTime)}
@@ -110,14 +202,14 @@ const MainPage = () => {
                     style={styles.anxietyButton} 
                     onPress={handleAnxietyRecord}
                 >
-                    <Text style={styles.buttonText}>불안한가요?</Text>
+                    <Text style={styles.buttonText}>지금 마음이 어때요?</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity 
                     style={styles.simulationButton} 
                     onPress={handlePlaceSimulation}
                 >
-                    <Text style={styles.buttonText}>오늘의 일 체험해보기</Text>
+                    <Text style={styles.buttonText}>오늘 할 일 연습해요</Text>
                 </TouchableOpacity>
             </View>
         </View>
@@ -135,10 +227,9 @@ const styles = StyleSheet.create({
     header: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'flex-start',
+        justifyContent: 'space-between',
         paddingTop: 8,
         marginBottom: 16,
-        position: 'relative',
     },
     title: {
         fontSize: 35,
@@ -146,15 +237,22 @@ const styles = StyleSheet.create({
         color: '#333',
         textAlign: 'left',
         marginTop: 10,
+        flex: 1,
+    },
+    headerIcons: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 12,
+        marginTop: 15,
+    },
+    headerIcon: {
+        padding: 5,
     },
     settingsIcon: {
         position: 'absolute',
         right: 0,
         padding: 5,
         marginTop: 15,
-    },
-    settingsIconText: {
-        fontSize: 30,
     },
     outerScheduleContainer: {
         backgroundColor: '#FFC364',
@@ -169,6 +267,31 @@ const styles = StyleSheet.create({
         shadowRadius: 6,
         elevation: 4,
         justifyContent: 'center',
+    },
+    scheduleHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 15,
+    },
+    scheduleHeaderTitle: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: '#333',
+    },
+    ttsButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        backgroundColor: '#FFFFFF',
+        paddingHorizontal: 10,
+        paddingVertical: 6,
+        borderRadius: 8,
+        gap: 6,
+    },
+    ttsButtonText: {
+        fontSize: 12,
+        color: '#666',
+        fontWeight: '600',
     },
     scheduleScrollView: {
         flex: 1,
@@ -206,6 +329,7 @@ const styles = StyleSheet.create({
         flex: 1,
         alignItems: 'flex-start',
         justifyContent: 'center',
+        minWidth: 0,
     },
     scheduleTime: {
         fontSize: 20,
@@ -274,5 +398,36 @@ const styles = StyleSheet.create({
         fontSize: 16,
         color: '#888',
         textAlign: 'center',
+    },
+    profileSection: {
+        alignItems: 'center',
+        marginBottom: 20,
+        paddingVertical: 16,
+    },
+    profileImage: {
+        width: 100,
+        height: 100,
+        borderRadius: 50,
+        backgroundColor: '#eee',
+        marginBottom: 12,
+    },
+    profilePlaceholder: {
+        width: 100,
+        height: 100,
+        borderRadius: 50,
+        backgroundColor: '#FFC364',
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 12,
+    },
+    profilePlaceholderText: {
+        fontSize: 40,
+        fontWeight: '700',
+        color: '#000',
+    },
+    profileName: {
+        fontSize: 22,
+        fontWeight: 'bold',
+        color: '#333',
     },
 });

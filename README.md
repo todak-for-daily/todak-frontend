@@ -4,6 +4,26 @@ This is a new [**React Native**](https://reactnative.dev) project, bootstrapped 
 
 > **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
 
+## Step 0: Environment Variables Setup
+
+Before running the app, you need to create a `.env` file in the root directory with the following variables:
+
+```env
+# Google Sign-In Web Client ID
+WEB_CLIENT_ID=your_google_web_client_id_here
+
+# Backend API Base URL
+API_BASE_URL=https://your-backend-url.com
+```
+
+**Important Notes:**
+- Copy the `.env` file format above and create a `.env` file in the project root
+- Never commit `.env` file to git (it's already in `.gitignore`)
+- If you change `.env` file, you need to:
+  1. Stop Metro bundler (Ctrl+C)
+  2. Clear cache: `yarn start:reset` or `npm run start:reset`
+  3. Rebuild the app: `yarn android` or `npm run android`
+
 ## Step 1: Start Metro
 
 First, you will need to run **Metro**, the JavaScript build tool for React Native.

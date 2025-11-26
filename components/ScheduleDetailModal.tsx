@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -7,20 +7,32 @@ import {
   StyleSheet,
   ScrollView 
 } from 'react-native';
+import FeatherIcon from 'react-native-vector-icons/Feather';
+import TTS from 'react-native-tts';
+import { speakText, stopSpeaking } from '../utils/textToSpeech';
 import { ApiSchedule } from '../contexts/ScheduleContext'; 
+import { COLOR_NAME_MAP, NORMALIZED_SCHEDULE_COLORS } from '../types/colors';
+import { getDayLabelFromKey, DayOfWeek } from '../types/datetime';
 
-const getDisplayColorStyle = (colorName: string | null) => {
-  const colorMap: { [key: string]: string } = {
-    'red': '#FF6B6B',
-    'green': '#6BCB77',
-    'blue': '#4D96FF',
-    'yellow': '#d2a800ff', 
-    'purple': '#845EC2',
-    'gray': '#9b9b9bff',
-    'brown': '#59411bff',
-    'pink': '#FF6EC7',
-  };
-  return colorMap[colorName?.toLowerCase() || 'gray'] || colorMap['gray'];
+const DEFAULT_COLOR = COLOR_NAME_MAP.gray;
+
+const getDisplayColorStyle = (colorValue: string | null) => {
+  if (!colorValue) return DEFAULT_COLOR;
+
+  const normalizedHex = colorValue.toUpperCase();
+  const isExactMatch = NORMALIZED_SCHEDULE_COLORS.includes(normalizedHex);
+  if (isExactMatch) {
+    return normalizedHex;
+  }
+
+  const mapped =
+    COLOR_NAME_MAP[colorValue.toLowerCase()] ||
+    COLOR_NAME_MAP[normalizedHex.toLowerCase()];
+  if (mapped) {
+    return mapped;
+  }
+
+  return DEFAULT_COLOR;
 };
 
 // 시간 범위를 포맷하는 함수 ("HH:mm:ss" -> "오전/오후 H:mm ~ 오전/오후 H:mm")
@@ -48,9 +60,23 @@ interface ScheduleDetailModalProps {
   visible: boolean; // 모달 표시 여부
   onClose: () => void; // 모달 닫기 함수
   schedule: ApiSchedule | null; // 표시할 일정 데이터 (null 가능성 처리)
+  onEdit?: () => void; // 수정 버튼 클릭 시 호출되는 함수 (선택적)
+  onDelete?: () => void; // 삭제 버튼 클릭 시 호출되는 함수 (선택적)
 }
 
-const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({ visible, onClose, schedule }) => {
+const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({ visible, onClose, schedule, onEdit, onDelete }) => {
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  // TTS 완료 이벤트 리스너
+  useEffect(() => {
+    TTS.addEventListener('tts-finish', () => {
+      setIsSpeaking(false);
+    });
+    TTS.addEventListener('tts-cancel', () => {
+      setIsSpeaking(false);
+    });
+  }, []);
+
   // schedule 데이터가 없으면 모달을 렌더링하지 않음
   if (!schedule) return null;
 
@@ -59,12 +85,57 @@ const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({ visible, onCl
   const timeRange = formatApiTimeRange(schedule.startTime, schedule.endTime);
 
   // 일정 날짜(date) 문자열로부터 요일 이름 계산
-  // 'date' 필드는 'YYYY-MM-DD' 형식이므로, 시간 부분을 'T00:00:00'으로 추가하여 Date 객체 생성
-  // 이렇게 하면 사용자의 로컬 시간대 기준으로 요일을 계산
-  const dateObj = new Date(`${schedule.date}T00:00:00`);
-  const weekdayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
-  // getDay()는 0(일요일) ~ 6(토요일) 반환
-  const weekdayName = weekdayNames[dateObj.getDay()];
+  // 루틴 일정의 경우 "매주 [요일]" 형식으로 표시
+  let weekdayName = '';
+  if (schedule.isRoutine) {
+    const normalizedKey = schedule.routineDayOfWeek
+      ? (schedule.routineDayOfWeek.toUpperCase() as DayOfWeek)
+      : undefined;
+    weekdayName = getDayLabelFromKey(normalizedKey);
+    if (!schedule.routineDayOfWeek && schedule.date && schedule.date.trim() !== '') {
+      try {
+        const dateObj = new Date(`${schedule.date}T00:00:00`);
+        if (!isNaN(dateObj.getTime())) {
+          const weekdayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+          weekdayName = weekdayNames[dateObj.getDay()];
+        }
+      } catch {
+        console.warn('Failed to parse date for routine schedule:', schedule.date);
+      }
+    }
+    weekdayName = weekdayName || '요일';
+  } else {
+    // 일회성 일정: 특정 날짜의 요일 표시
+    if (schedule.date && schedule.date.trim() !== '') {
+      try {
+        const dateObj = new Date(`${schedule.date}T00:00:00`);
+        if (!isNaN(dateObj.getTime())) {
+          const weekdayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+          weekdayName = weekdayNames[dateObj.getDay()];
+        }
+      } catch {
+        console.warn('Failed to parse date:', schedule.date);
+      }
+    }
+    // 요일을 찾지 못한 경우 기본값
+    weekdayName = weekdayName || '요일';
+  }
+
+  // TTS로 모든 정보 읽기
+  const handleReadAll = async () => {
+    if (isSpeaking) {
+      await stopSpeaking();
+      setIsSpeaking(false);
+      return;
+    }
+
+    const timeInfo = schedule.isRoutine ? `매주 ${weekdayName}, ${timeRange}` : `${weekdayName}, ${timeRange}`;
+    const locationInfo = schedule.location || '장소 정보 없음';
+    const fullText = `${schedule.title}. ${timeInfo}. ${locationInfo}`;
+
+    setIsSpeaking(true);
+    await speakText(fullText);
+  };
 
   return (
     <Modal
@@ -82,12 +153,30 @@ const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({ visible, onCl
 
         <View style={styles.modalContent} onStartShouldSetResponder={() => true}>
           <ScrollView>
-            <View style={[styles.colorIndicator, { backgroundColor: displayColor }]} />
+            <View style={styles.headerRow}>
+              <View style={[styles.colorIndicator, { backgroundColor: displayColor }]} />
+              <TouchableOpacity
+                style={styles.ttsButton}
+                onPress={handleReadAll}
+                activeOpacity={0.7}
+              >
+                <FeatherIcon
+                  name={isSpeaking ? 'volume-2' : 'volume-1'}
+                  size={20}
+                  color={isSpeaking ? '#FFA000' : '#666'}
+                />
+                <Text style={styles.ttsButtonText}>
+                  {isSpeaking ? '읽는 중...' : '전체 읽기'}
+                </Text>
+              </TouchableOpacity>
+            </View>
 
             <Text style={styles.title}>{schedule.title}</Text>
             <View style={styles.infoRow}>
               <Text style={styles.icon}>🕒</Text>
-              <Text style={styles.infoText}>{`매주 ${weekdayName}, ${timeRange}`}</Text>
+              <Text style={styles.infoText}>
+                {schedule.isRoutine ? `매주 ${weekdayName}, ${timeRange}` : `${weekdayName}, ${timeRange}`}
+              </Text>
             </View>
 
             <View style={styles.infoRow}>
@@ -99,9 +188,21 @@ const ScheduleDetailModal: React.FC<ScheduleDetailModalProps> = ({ visible, onCl
 
           </ScrollView>
 
-          <TouchableOpacity style={styles.closeButton} onPress={onClose}>
-            <Text style={styles.closeButtonText}>닫기</Text>
-          </TouchableOpacity>
+          <View style={styles.buttonRow}>
+            {onDelete && (
+              <TouchableOpacity style={styles.deleteButton} onPress={onDelete}>
+                <Text style={styles.deleteButtonText}>삭제하기</Text>
+              </TouchableOpacity>
+            )}
+            {onEdit && (
+              <TouchableOpacity style={styles.editButton} onPress={onEdit}>
+                <Text style={styles.editButtonText}>수정하기</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity style={styles.closeButton} onPress={onClose}>
+              <Text style={styles.closeButtonText}>닫기</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </TouchableOpacity>
     </Modal>
@@ -128,10 +229,31 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
   },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 15,
+  },
   colorIndicator: {
     height: 10,
     borderRadius: 5,
-    marginBottom: 15,
+    flex: 1,
+    marginRight: 10,
+  },
+  ttsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F5',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    gap: 6,
+  },
+  ttsButtonText: {
+    fontSize: 14,
+    color: '#666',
+    fontWeight: '600',
   },
   title: {
     fontSize: 24,
@@ -154,11 +276,43 @@ const styles = StyleSheet.create({
     color: '#555',
     flex: 1,
   },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 20,
+    flexWrap: 'wrap',
+  },
+  deleteButton: {
+    flex: 1,
+    backgroundColor: '#FFE6E6',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#FF9E9E',
+  },
+  deleteButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#C62828',
+  },
+  editButton: {
+    flex: 1,
+    backgroundColor: '#4D96FF',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  editButtonText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#fff',
+  },
   closeButton: {
+    flex: 1,
     backgroundColor: '#e0e0e0', 
     borderRadius: 10,
     paddingVertical: 12,
-    marginTop: 20, 
     alignItems: 'center',
   },
   closeButtonText: {
