@@ -9,25 +9,22 @@ import {
 } from 'react-native';
 
 import { useSchedule, ApiSchedule } from '../contexts/ScheduleContext';
+import { useWeeklySchedule } from '../contexts/WeeklyScheduleContext';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 // 색상 정의 가져오기 (이름->Hex 매핑)
-import { COLOR_NAME_MAP } from '../types/colors'; 
+import { COLOR_NAME_MAP } from '../types/colors';
+import { getSchedulesForDate } from '../utils/scheduleMerger'; 
 
 type RootStackParamList = {
  Login: undefined;
  Tabs: undefined; 
  MonthlyPlanner: undefined;
- WeeklySchedule: { year: number, month: number, weekIndex: number }; // 최상위 스택에 있으므로 접근 가능
+ WeeklySchedule: { date?: string; year?: number; month?: number; day?: number; weekIndex?: number }; // 일 단위 또는 주 단위
 };
 
 // 네비게이션 prop 타입
 type MonthlyPlannerNavigationProp = NativeStackNavigationProp<RootStackParamList, 'MonthlyPlanner'>;
-
-// 날짜별로 그룹화된 스케줄 타입
-type SchedulesMap = {
- [dateKey: string]: ApiSchedule[]; // "YYYY-MM-DD" : Schedule[]
-};
 
 // 한 주의 날짜 데이터 타입
 interface WeekData {
@@ -48,7 +45,11 @@ interface CalendarDay {
 // --- 먼슬리 플래너 컴포넌트 ---
 const MonthlySchedule = () => {
  const navigation = useNavigation<MonthlyPlannerNavigationProp>();
- const { rawSchedules, loading, error } = useSchedule();
+ const { rawSchedules: oneTimeSchedules, loading: loadingOneTime, error: errorOneTime } = useSchedule();
+ const { rawWeeklySchedules, loading: loadingWeekly, error: errorWeekly } = useWeeklySchedule();
+ 
+ const loading = loadingOneTime || loadingWeekly;
+ const error = errorOneTime || errorWeekly;
 
  // 현재 표시할 연도와 월 상태
  const [currentDate, setCurrentDate] = useState(new Date()); // 오늘 날짜로 초기화
@@ -66,27 +67,20 @@ const MonthlySchedule = () => {
    const startDate = new Date(firstDayOfMonth);
    startDate.setDate(startDate.getDate() - firstDayWeekday);
 
-   // rawSchedules를 날짜별 Map으로 변환 
-   const schedulesMap = rawSchedules.reduce((acc, schedule) => {
-       // 날짜 유효성 검사 추가
-       if (!schedule || typeof schedule.date !== 'string') {
-           console.warn('Invalid schedule object in reduce:', schedule);
-           return acc;
-       }
-       const dateKey = schedule.date; // "YYYY-MM-DD"
-       if (!acc[dateKey]) {
-           acc[dateKey] = [];
-       }
-       acc[dateKey].push(schedule);
-       return acc;
-   }, {} as SchedulesMap);
-
    let currentWeekDays: CalendarDay[] = [];
    // 6주(42일) 동안 반복
    for (let i = 0; i < 42; i++) {
      const date = new Date(startDate);
      date.setDate(startDate.getDate() + i);
-     const dateKey = date.toISOString().split('T')[0]; // "YYYY-MM-DD"
+     // KST 기준으로 날짜 문자열 생성 (시간대 문제 방지)
+     const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+     
+     // 해당 날짜의 스케줄 병합 (주간 반복 + 일회성)
+     const mergedSchedules = getSchedulesForDate(
+       date,
+       rawWeeklySchedules,
+       oneTimeSchedules,
+     );
      
      const dayData: CalendarDay = {
        key: dateKey,
@@ -94,8 +88,7 @@ const MonthlySchedule = () => {
        dayOfMonth: date.getDate(),
        isCurrentMonth: date.getMonth() === currentMonth,
        isToday: date.toDateString() === new Date().toDateString(),
-       // Map에서 해당 날짜의 스케줄 가져오기
-       schedules: schedulesMap[dateKey] || [],
+       schedules: mergedSchedules,
      };
 
      currentWeekDays.push(dayData);
@@ -115,7 +108,7 @@ const MonthlySchedule = () => {
    }
 
    return weeks.slice(0, 6); // 최대 6주만 표시
- }, [currentYear, currentMonth, rawSchedules]); // 연도, 월, 스케줄 데이터가 바뀔 때만 재계산
+ }, [currentYear, currentMonth, rawWeeklySchedules, oneTimeSchedules]); // 연도, 월, 주간/일회성 스케줄 데이터가 바뀔 때만 재계산
 
  // 월 이동 함수
  const goToPreviousMonth = useCallback(() => {
@@ -128,31 +121,17 @@ const MonthlySchedule = () => {
 
  // 주 렌더링 함수
  const renderWeek = ({ item }: { item: WeekData }) => {
-     // 주 클릭 시 WeeklySchedule 페이지로 이동
-     const handlePressWeek = () => {
-         console.log(`Navigating to WeeklySchedule: Year ${currentYear}, Month ${currentMonth + 1}, Week ${item.weekIndex + 1}`);
-         navigation.navigate('WeeklySchedule', {
-             year: currentYear,
-             month: currentMonth, // 0부터 시작하는 월 인덱스 전달
-             weekIndex: item.weekIndex // 0부터 시작하는 주 인덱스 전달
-         });
-     };
-
      return (
-         <TouchableOpacity
-             style={styles.weekRow}
-             onPress={handlePressWeek}
-             activeOpacity={0.7}
-         >
+         <View style={styles.weekRow}>
              {/* days 배열 유효성 검사 추가 */}
              {Array.isArray(item?.days) ? item.days.map(day => renderDayCell(day)) : null}
-         </TouchableOpacity>
+         </View>
      );
  };
    
 const renderDayCell = (day: CalendarDay) => {
    const getHexColor = (colorNameOrHex: string | null): string => {
-       const defaultGray = COLOR_NAME_MAP['gray'] || '#9B9B9BFF';
+      const defaultGray = COLOR_NAME_MAP.gray || '#9B9B9BFF';
 
        if (!colorNameOrHex) {
            return defaultGray;
@@ -164,16 +143,27 @@ const renderDayCell = (day: CalendarDay) => {
            return colorNameOrHex.toUpperCase(); 
        }
 
-       return COLOR_NAME_MAP[colorNameOrHex.toLowerCase()] || defaultGray;
+      return COLOR_NAME_MAP[colorNameOrHex.toLowerCase()] || defaultGray;
+   };
+
+   // 날짜 클릭 시 해당 날짜로 WeeklySchedule로 이동
+   const handleDayPress = () => {
+       const dateStr = day.key; // YYYY-MM-DD 형식
+       console.log(`Navigating to WeeklySchedule with date: ${dateStr}`);
+       navigation.navigate('WeeklySchedule', {
+           date: dateStr
+       });
    };
 
    return (
-     <View
+     <TouchableOpacity
        key={day.key}
        style={[
          styles.dayCell,
          !day.isCurrentMonth && styles.otherMonthDay, // 현재 월 아니면 흐리게
        ]}
+       onPress={handleDayPress}
+       activeOpacity={0.7}
      >
        <Text style={[styles.dayText, day.isToday && styles.todayText]}>
          {day.dayOfMonth}
@@ -197,13 +187,13 @@ const renderDayCell = (day: CalendarDay) => {
                     numberOfLines={1} // 한 줄로 표시
                     ellipsizeMode="tail" // 길면 끝 부분 ... 처리
                   >
-                      {schedule.title}
+                    {schedule.title}
                   </Text>
               </View>
             );
          }) : null}
        </View>
-     </View>
+     </TouchableOpacity>
    );
  };
 
@@ -350,8 +340,8 @@ const styles = StyleSheet.create({
    marginBottom: 3,
  },
  todayText: {
-   color: '#ffffff',
-   backgroundColor: '#4D96FF',
+   color: '#000000',
+   backgroundColor: '#FFC364',
    borderRadius: 10,
    paddingHorizontal: 5,
    paddingVertical: 1,

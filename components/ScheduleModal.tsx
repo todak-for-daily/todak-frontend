@@ -14,10 +14,14 @@ import { Picker } from '@react-native-picker/picker';
 import { useSchedule } from '../contexts/ScheduleContext';
 import { scheduleColors } from '../types/colors';
 
+import { ApiSchedule } from '../contexts/ScheduleContext';
+
 interface ScheduleModalProps {
   visible: boolean;
   onClose: () => void;
   targetDate: string;
+  initialSchedule?: ApiSchedule; // 수정 모드일 때 사용
+  onSave?: () => void; // 스케줄 저장 완료 시 호출되는 콜백
 }
 
 // 1-12시 배열, 분 배열
@@ -57,13 +61,13 @@ const getKoreanNow = () => {
 const weekdayEmoji = ['☀️','🌙','🔥','💧','🌳','💰','🪨'];
 const weekdayLabel = ['일요일','월요일','화요일','수요일','목요일','금요일','토요일'];
 
-const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetDate }) => {
-  const { addSchedule } = useSchedule();
+const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetDate, initialSchedule, onSave }) => {
+  const { addSchedule, updateSchedule } = useSchedule();
+  const isEditMode = !!initialSchedule;
 
   const [scheName, setScheName] = useState('');
   const [schePlace, setSchePlace] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
-  const [isUnfamiliar, setIsUnfamiliar] = useState(false);
   const [pickedColor, setPickedColor] = useState<string | undefined>(undefined);
 
   // 24시간제 (기존 로직용)
@@ -89,61 +93,114 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
 
   useEffect(() => {
     if (visible) {
-      setScheName('');
-      setSchePlace('');
-      setErrorMessage('');
-      setIsUnfamiliar(false);
-      setPickedColor(undefined);
-      
-      // 초기화 (기본값: 오전 9시)
-      setStartHour(9);
-      setStartMinute(0);
-      setEndHour(10);
-      setEndMinute(0);
+      if (initialSchedule) {
+        // 수정 모드: 기존 일정 데이터로 초기화
+        setScheName(initialSchedule.title);
+        setSchePlace(initialSchedule.location);
+        setPickedColor(initialSchedule.color);
+        
+        // 시작 시간 파싱
+        const [startH, startM] = initialSchedule.startTime.split(':').map(Number);
+        setStartHour(startH);
+        setStartMinute(startM || 0);
+        const { hour12: sHour12, period: sPeriod } = convertTo12Hour(startH);
+        setStartHour12(sHour12);
+        setStartPeriod(sPeriod);
+        
+        // 끝나는 시간 파싱
+        const [endH, endM] = initialSchedule.endTime.split(':').map(Number);
+        setEndHour(endH);
+        setEndMinute(endM || 0);
+        const { hour12: eHour12, period: ePeriod } = convertTo12Hour(endH);
+        setEndHour12(eHour12);
+        setEndPeriod(ePeriod);
+      } else {
+        // 추가 모드: 기본값으로 초기화
+        setScheName('');
+        setSchePlace('');
+        setErrorMessage('');
+        setPickedColor(undefined);
+        
+        // 초기화 (기본값: 오전 9시)
+        setStartHour(9);
+        setStartMinute(0);
+        setEndHour(10);
+        setEndMinute(0);
 
-      // 초기화
-      const { hour12: sHour12, period: sPeriod } = convertTo12Hour(9);
-      setStartHour12(sHour12);
-      setStartPeriod(sPeriod);
+        // 초기화
+        const { hour12: sHour12, period: sPeriod } = convertTo12Hour(9);
+        setStartHour12(sHour12);
+        setStartPeriod(sPeriod);
 
-      const { hour12: eHour12, period: ePeriod } = convertTo12Hour(10);
-      setEndHour12(eHour12);
-      setEndPeriod(ePeriod);
+        const { hour12: eHour12, period: ePeriod } = convertTo12Hour(10);
+        setEndHour12(eHour12);
+        setEndPeriod(ePeriod);
+      }
     }
-  }, [visible]);
+  }, [visible, initialSchedule]);
 
   const canSubmit = scheName.trim().length > 0;
 
-  const handleAdd = () => {
-    const start = new Date(targetDate);
-    start.setHours(startHour); // 24시간제
-    start.setMinutes(startMinute);
-    start.setSeconds(0, 0);
-
-    const end = new Date(targetDate);
-    end.setHours(endHour); // 24시간제
-    end.setMinutes(endMinute);
-    end.setSeconds(0, 0);
+  const handleAdd = async () => {
+    // targetDate가 YYYY-MM-DD 형식이므로 올바르게 파싱
+    const [year, month, day] = targetDate.split('-').map(Number);
+    const start = new Date(year, month - 1, day, startHour, startMinute, 0);
+    const end = new Date(year, month - 1, day, endHour, endMinute, 0);
 
     if (end <= start) {
       setErrorMessage('끝나는 시간이 시작보다 빨라요.');
       return;
     }
 
-    addSchedule({
-      title: scheName.trim(),
-      startTime: formatToApiTime(start),
-      endTime: formatToApiTime(end),
-      location: (schePlace || '장소 없음').trim(),
-      date: start.toISOString().split('T')[0],
-      color: pickedColor || 'gray',
-    });
+    // targetDate를 그대로 사용 (이미 올바른 YYYY-MM-DD 형식이므로)
+    // Date 객체로 변환하면 시간대 문제가 발생할 수 있음
+    const scheduleDate = targetDate;
 
-    onClose();
+    if (isEditMode && initialSchedule) {
+      // 수정 모드
+      const updatedSchedule: ApiSchedule = {
+        ...initialSchedule,
+        title: scheName.trim(),
+        startTime: formatToApiTime(start),
+        endTime: formatToApiTime(end),
+        location: (schePlace || '장소 없음').trim(),
+        date: scheduleDate,
+        color: pickedColor || 'gray',
+      };
+
+      try {
+        await updateSchedule(updatedSchedule);
+        onSave?.(); // 저장 완료 콜백 호출
+        onClose();
+      } catch (error) {
+        setErrorMessage('일정 수정에 실패했습니다. 다시 시도해주세요.');
+      }
+    } else {
+      // 추가 모드
+      try {
+        await addSchedule({
+          title: scheName.trim(),
+          startTime: formatToApiTime(start),
+          endTime: formatToApiTime(end),
+          location: (schePlace || '장소 없음').trim(),
+          date: scheduleDate,
+          color: pickedColor || 'gray',
+        });
+        onSave?.(); // 저장 완료 콜백 호출
+        onClose();
+      } catch (error) {
+        setErrorMessage('일정 등록에 실패했습니다. 다시 시도해주세요.');
+      }
+    }
   };
 
-  // KST 시간대 보정 (targetDate가 YYYY-MM-DD 문자열이므로 new Date()로 파싱 시 UTC로 해석되는 것 방지)
-  const dayIdx = targetDate ? new Date(new Date(targetDate).toISOString().replace('Z', '+09:00')).getDay() : getKoreanNow().getDay(); 
+  // targetDate에서 요일 계산 (YYYY-MM-DD 형식)
+  // 로컬 시간대 기준으로 Date 객체 생성하여 요일 계산
+  const dayIdx = targetDate ? (() => {
+    const [year, month, day] = targetDate.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    return date.getDay(); // 0(일요일) ~ 6(토요일)
+  })() : getKoreanNow().getDay(); 
 
   return (
     <Modal
@@ -161,7 +218,7 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
           {/* 상단 헤더 */}
           <View style={styles.header}>
             <Text style={styles.headerTitle}>
-              {weekdayEmoji[dayIdx+1]} {weekdayLabel[dayIdx+1]} 일정 추가
+              {weekdayEmoji[dayIdx]} {weekdayLabel[dayIdx]} 일정 {isEditMode ? '수정' : '추가'}
             </Text>
             <TouchableOpacity
               accessible
@@ -184,6 +241,7 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
               <TextInput
                 style={styles.input}
                 placeholder="예: 병원 가기, 밥 먹기"
+                placeholderTextColor="#999999"
                 value={scheName}
                 onChangeText={setScheName}
                 maxLength={40}
@@ -194,6 +252,7 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
               <TextInput
                 style={styles.input}
                 placeholder="예: 집, 학교, 병원"
+                placeholderTextColor="#999999"
                 value={schePlace}
                 onChangeText={setSchePlace}
                 maxLength={40}
@@ -206,24 +265,23 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
 
               {/* === 시작 시간 === */}
               <Text style={styles.timeLabel}>시작 시간</Text>
+              <View style={styles.periodToggleContainer}>
+                <TouchableOpacity 
+                  style={[styles.periodButton, startPeriod === 'AM' && styles.periodButtonActive]}
+                  onPress={() => setStartPeriod('AM')}
+                >
+                  <Text style={[styles.periodButtonEmoji, startPeriod === 'AM' && styles.periodButtonTextActive]}>☀️</Text>
+                  <Text style={[styles.periodButtonText, startPeriod === 'AM' && styles.periodButtonTextActive]}>오전</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.periodButton, startPeriod === 'PM' && styles.periodButtonActive]}
+                  onPress={() => setStartPeriod('PM')}
+                >
+                  <Text style={[styles.periodButtonEmoji, startPeriod === 'PM' && styles.periodButtonTextActive]}>🌙</Text>
+                  <Text style={[styles.periodButtonText, startPeriod === 'PM' && styles.periodButtonTextActive]}>오후</Text>
+                </TouchableOpacity>
+              </View>
               <View style={styles.row}>
-                {/* 오전/오후 토글 */}
-                <View style={styles.periodToggleContainer}>
-                  <TouchableOpacity 
-                    style={[styles.periodButton, startPeriod === 'AM' && styles.periodButtonActive]}
-                    onPress={() => setStartPeriod('AM')}
-                  >
-                    <Text style={[styles.periodButtonText, startPeriod === 'AM' && styles.periodButtonTextActive]}>☀️</Text>
-                    <Text style={[styles.periodButtonText, startPeriod === 'AM' && styles.periodButtonTextActive]}>오전</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[styles.periodButton, startPeriod === 'PM' && styles.periodButtonActive]}
-                    onPress={() => setStartPeriod('PM')}
-                  >
-                    <Text style={[styles.periodButtonText, startPeriod === 'PM' && styles.periodButtonTextActive]}>🌙</Text>
-                    <Text style={[styles.periodButtonText, startPeriod === 'PM' && styles.periodButtonTextActive]}>오후</Text>
-                  </TouchableOpacity>
-                </View>
                 {/* 1-12시 피커 */}
                 <View style={styles.pickerWrap}>
                   <Picker
@@ -233,7 +291,7 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
                     dropdownIconColor="#333"
                   >
                     {hours12.map(h => (
-                      <Picker.Item key={h} label={`${h}시`} value={h} />
+                      <Picker.Item key={h} label={`${h}시`} value={h} color="#000" />
                     ))}
                   </Picker>
                 </View>
@@ -246,7 +304,7 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
                     dropdownIconColor="#333"
                   >
                     {minutes.map(m => (
-                      <Picker.Item key={m} label={`${m}분`} value={m} />
+                      <Picker.Item key={m} label={`${m}분`} value={m} color="#000" />
                     ))}
                   </Picker>
                 </View>
@@ -254,24 +312,23 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
 
               {/* === 끝나는 시간 === */}
               <Text style={[styles.timeLabel, { marginTop: 10 }]}>끝나는 시간</Text>
+              <View style={styles.periodToggleContainer}>
+                <TouchableOpacity 
+                  style={[styles.periodButton, endPeriod === 'AM' && styles.periodButtonActive]}
+                  onPress={() => setEndPeriod('AM')}
+                >
+                  <Text style={[styles.periodButtonEmoji, endPeriod === 'AM' && styles.periodButtonTextActive]}>☀️</Text>
+                  <Text style={[styles.periodButtonText, endPeriod === 'AM' && styles.periodButtonTextActive]}>오전</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.periodButton, endPeriod === 'PM' && styles.periodButtonActive]}
+                  onPress={() => setEndPeriod('PM')}
+                >
+                  <Text style={[styles.periodButtonEmoji, endPeriod === 'PM' && styles.periodButtonTextActive]}>🌙</Text>
+                  <Text style={[styles.periodButtonText, endPeriod === 'PM' && styles.periodButtonTextActive]}>오후</Text>
+                </TouchableOpacity>
+              </View>
               <View style={styles.row}>
-                {/* 오전/오후 토글 */}
-                <View style={styles.periodToggleContainer}>
-                  <TouchableOpacity 
-                    style={[styles.periodButton, endPeriod === 'AM' && styles.periodButtonActive]}
-                    onPress={() => setEndPeriod('AM')}
-                  >
-                    <Text style={[styles.periodButtonText, startPeriod === 'AM' && styles.periodButtonTextActive]}>☀️</Text>
-                    <Text style={[styles.periodButtonText, startPeriod === 'AM' && styles.periodButtonTextActive]}>오전</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={[styles.periodButton, endPeriod === 'PM' && styles.periodButtonActive]}
-                    onPress={() => setEndPeriod('PM')}
-                  >
-                    <Text style={[styles.periodButtonText, endPeriod === 'PM' && styles.periodButtonTextActive]}>🌙</Text>
-                    <Text style={[styles.periodButtonText, endPeriod === 'PM' && styles.periodButtonTextActive]}>오후</Text>
-                  </TouchableOpacity>
-                </View>
                 {/* 1-12시 피커 */}
                 <View style={styles.pickerWrap}>
                   <Picker
@@ -281,7 +338,7 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
                     dropdownIconColor="#333"
                   >
                     {hours12.map(h => (
-                      <Picker.Item key={h} label={`${h}시`} value={h} />
+                      <Picker.Item key={h} label={`${h}시`} value={h} color="#000" />
                     ))}
                   </Picker>
                 </View>
@@ -294,7 +351,7 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
                     dropdownIconColor="#333"
                   >
                     {minutes.map(m => (
-                      <Picker.Item key={m} label={`${m}분`} value={m} />
+                      <Picker.Item key={m} label={`${m}분`} value={m} color="#000" />
                     ))}
                   </Picker>
                 </View>
@@ -306,28 +363,6 @@ const ScheduleModal: React.FC<ScheduleModalProps> = ({ visible, onClose, targetD
 
             <View style={styles.card} accessible accessibilityLabel="이 일은...">
               <Text style={styles.cardTitle}>3. 선택 옵션</Text>
-
-              <Text style={styles.cardTitleSmall}>처음 가는 곳/처음 해보는 일인가요?</Text>
-              <View style={styles.toggleRow}>
-                <TouchableOpacity
-                  style={[styles.toggleBtn, isUnfamiliar && styles.toggleBtnActive]}
-                  onPress={() => setIsUnfamiliar(true)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: isUnfamiliar }}
-                  accessibilityLabel="낯설어요 선택"
-                >
-                  <Text style={[styles.toggleText, isUnfamiliar && styles.toggleTextActive]}>예</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.toggleBtn, !isUnfamiliar && styles.toggleBtnActive]}
-                  onPress={() => setIsUnfamiliar(false)}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: !isUnfamiliar }}
-                  accessibilityLabel="낯설지 않아요 선택"
-                >
-                  <Text style={[styles.toggleText, !isUnfamiliar && styles.toggleTextActive]}>아니오</Text>
-                </TouchableOpacity>
-              </View>
 
               <Text style={styles.cardTitleSmall}>색상 선택</Text>
               <View style={styles.colorGrid} accessible accessibilityLabel="색상 선택 목록">
@@ -434,7 +469,7 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 14,
     borderWidth: 3,
-    borderColor: '#FFD89C', 
+    borderColor: '#787878ff', 
   },
   cardTitle: {
     fontSize: 18,
@@ -456,7 +491,7 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     fontSize: 18,
     borderWidth: 3,
-    borderColor: '#FFD89C',
+    borderColor: '#787878ff',
     color: '#333',
     marginBottom: 10,
   },
@@ -470,15 +505,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
-
   periodToggleContainer: {
     flex: 0.8,
     borderWidth: 3,
-    borderColor: '#FFD89C',
+    borderColor: '#787878ff',
     borderRadius: 12,
     overflow: 'hidden',
     flexDirection: 'row',
     height: 52,
+    marginBottom: 10,
   },
   periodButton: {
     flex: 1,
@@ -487,9 +522,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   periodButtonActive: {
-    backgroundColor: '#FFEB99', 
-    borderColor: '#FFD89C',
+    backgroundColor: '#b3dbfcff', 
+    borderColor: '#787878ff',
     borderWidth: 1,
+  },
+  periodButtonEmoji: {
+    fontSize: 24,
+    marginBottom: 2,
   },
   periodButtonText: {
     fontSize: 14,
@@ -504,15 +543,19 @@ const styles = StyleSheet.create({
   pickerWrap: {
     flex: 1,
     borderWidth: 3,
-    borderColor: '#FFD89C',
+    borderColor: '#787878ff',
     borderRadius: 12,
     overflow: 'hidden',
     backgroundColor: '#FFFFFF',
     height: 52,
     justifyContent: 'center',
+    minWidth: 90,
+    paddingHorizontal: 4,
   },
   picker: {
-    height: 52, 
+    height: 52,
+    width: '100%',
+    color: '#000',
   },
   errorText: {
     marginTop: 8,
@@ -531,11 +574,11 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     borderWidth: 3,
-    borderColor: '#FFD89C',
+    borderColor: '#787878ff',
     backgroundColor: '#FFFFFF',
   },
   toggleBtnActive: {
-    borderColor: '#70DA9F',
+    borderColor: '#b3dbfcff',
     backgroundColor: '#E9F8F0',
   },
   toggleText: { fontSize: 16, fontWeight: '700', color: '#333' },
@@ -553,7 +596,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 3,
-    borderColor: '#FFD89C',
+    borderColor: '#787878ff',
   },
   colorSelected: {
     borderColor: '#5DA8D9',

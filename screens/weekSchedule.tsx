@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
  View,
  Text,
@@ -6,23 +6,15 @@ import {
  StyleSheet,
  FlatList,
  ActivityIndicator,
- Dimensions,
 } from 'react-native';
+import FeatherIcon from 'react-native-vector-icons/Feather';
 import { useSchedule, ApiSchedule } from '../contexts/ScheduleContext';
+import { useWeeklySchedule } from '../contexts/WeeklyScheduleContext';
+import { getSchedulesForDate } from '../utils/scheduleMerger';
 import DeleteConfirmModal from '../components/DeleteConfirmModal';
 import ScheduleModal from '../components/ScheduleModal';
-import { useNavigation } from '@react-navigation/native';
-
-// 시각적 이해를 돕기 위한 이모지 추가
-const DAYS = [
- { key: 0, label: '일요일', emoji: '☀️' },
- { key: 1, label: '월요일', emoji: '🌙' },
- { key: 2, label: '화요일', emoji: '🔥' },
- { key: 3, label: '수요일', emoji: '💧' },
- { key: 4, label: '목요일', emoji: '🌳' },
- { key: 5, label: '금요일', emoji: '💰' },
- { key: 6, label: '토요일', emoji: '🪨' },
-];
+import ScheduleDetailModal from '../components/ScheduleDetailModal';
+import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 
 const formatApiTimeRange = (startTime: string, endTime: string) => {
    const parseAndFormat = (timeStr: string) => {
@@ -43,16 +35,84 @@ const formatApiTimeRange = (startTime: string, endTime: string) => {
 };
 
 
+type WeeklyScheduleRouteParams = {
+  date?: string; // YYYY-MM-DD 형식의 날짜 (선택적)
+  year?: number; // 하위 호환성을 위한 옵션
+  month?: number; // 하위 호환성을 위한 옵션
+  day?: number; // 하위 호환성을 위한 옵션
+  weekIndex?: number; // 기존 주 단위 호환성을 위한 옵션
+};
+
+type WeeklyScheduleRouteProp = RouteProp<{ WeeklySchedule: WeeklyScheduleRouteParams }, 'WeeklySchedule'>;
+
 const WeeklySchedule = () => {
  const navigation = useNavigation();
+ const route = useRoute<WeeklyScheduleRouteProp>();
+ const routeParams = route.params;
 
- const { schedules, deleteSchedule, loading } = useSchedule();
- const [selectedDay, setSelectedDay] = useState(new Date().getDay()); // 오늘 요일로 초기화 (0=일)
+ const { rawSchedules: oneTimeSchedules, deleteSchedule, loading: loadingOneTime } = useSchedule();
+ const { rawWeeklySchedules, loading: loadingWeekly } = useWeeklySchedule();
+ const loading = loadingOneTime || loadingWeekly;
+ 
+ // KST 기준 날짜 문자열 생성 함수 (시간대 문제 방지)
+ const formatDateToKST = useCallback((year: number, month: number, day: number): string => {
+   // 로컬 시간대로 Date 객체 생성 (시간대 문제 없음)
+   const date = new Date(year, month, day);
+   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+ }, []);
+
+ // 선택된 날짜 초기화 함수
+ const getInitialDate = useCallback(() => {
+   if (routeParams?.date) {
+     // YYYY-MM-DD 형식의 날짜 문자열
+     return routeParams.date;
+   } else if (routeParams?.year !== undefined && routeParams?.month !== undefined && routeParams?.day !== undefined) {
+     // 하위 호환성: year, month, day로 받은 경우
+     const year = routeParams.year;
+     const month = routeParams.month; // 0-based
+     const day = routeParams.day;
+     return formatDateToKST(year, month, day);
+   } else if (routeParams?.year !== undefined && routeParams?.month !== undefined && routeParams?.weekIndex !== undefined) {
+     // 기존 주 단위 호환성: year, month, weekIndex로 받은 경우 - 주의 첫 번째 날짜 계산
+     const year = routeParams.year;
+     const month = routeParams.month; // 0-based
+     const weekIndex = routeParams.weekIndex;
+     const firstDayOfMonth = new Date(year, month, 1);
+   const firstDayWeekday = firstDayOfMonth.getDay();
+     // 달력 시작 날짜 계산 (첫 주의 일요일)
+   const startDate = new Date(firstDayOfMonth);
+   startDate.setDate(startDate.getDate() - firstDayWeekday);
+     // weekIndex에 해당하는 주의 첫 번째 날짜 (일요일)
+     const targetDate = new Date(startDate);
+     targetDate.setDate(startDate.getDate() + (weekIndex * 7));
+     return formatDateToKST(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate());
+   }
+   // routeParams가 없으면 오늘 날짜 (KST 기준)
+   // 로컬 시간대 기준으로 직접 날짜 문자열 생성 (시간대 문제 방지)
+   const today = new Date();
+   const year = today.getFullYear();
+   const month = today.getMonth();
+   const day = today.getDate();
+   return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+ }, [routeParams, formatDateToKST]);
+
+ // 선택된 날짜 (routeParams에서 받은 날짜 또는 오늘)
+ const [selectedDate, setSelectedDate] = useState<string>(() => getInitialDate());
+
+ // routeParams가 변경되면 selectedDate 업데이트
+ useEffect(() => {
+   const newDate = getInitialDate();
+   setSelectedDate(newDate);
+ }, [getInitialDate]);
+
+ 
  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+ const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+ const [isDetailModalOpen, setIsDetailModalOpen] = useState(false);
+ const [selectedSchedule, setSelectedSchedule] = useState<ApiSchedule | null>(null);
  const [deleteTarget, setDeleteTarget] = useState<ApiSchedule | null>(null);
- const [addModalDate, setAddModalDate] = useState<string | null>(null);
 
- // KST 변환
+ // 현재 시간을 KST 기준으로 반환
  const getKoreanTime = useCallback(() => {
    const tempNow = new Date();
    const utc = tempNow.getTime() + tempNow.getTimezoneOffset() * 60000;
@@ -60,35 +120,30 @@ const WeeklySchedule = () => {
    return new Date(utc + KR_TIME_DIFF);
  }, []);
 
- // 선택된 요일 인덱스에 해당하는 '현재 주'의 날짜 문자열(YYYY-MM-DD) 반환
-  const getDateStringForSelectedDay = useCallback((dayIndex: number): string => {
-    const today = getKoreanTime(); // KST 기준 Date 객체
-    const todayIndex = today.getDay();
-    const diff = dayIndex - todayIndex;
-
-    const targetDate = new Date(today);
-    targetDate.setDate(today.getDate() + diff);
-
-    // YYYY-MM-DD 포맷 처리
-    const yyyy = targetDate.getFullYear();
-    const mm = String(targetDate.getMonth() + 1).padStart(2, '0');
-    const dd = String(targetDate.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  }, [getKoreanTime]);
-
- // 선택된 요일 및 해당 주의 날짜에 맞는 스케줄 목록
- const selectedDaySchedules = useMemo(() => {
-   const targetDateStr = getDateStringForSelectedDay(selectedDay);
-   const schedulesForDayOfWeek = schedules[selectedDay] || [];
-   return schedulesForDayOfWeek.filter(schedule => schedule.date === targetDateStr);
- }, [schedules, selectedDay, getDateStringForSelectedDay]);
+ // 선택된 날짜의 스케줄 목록 (주간 반복 + 일회성 병합)
+const selectedDaySchedules = useMemo(() => {
+  // selectedDate를 Date 객체로 변환
+  const [year, month, day] = selectedDate.split('-').map(Number);
+  const targetDate = new Date(year, month - 1, day);
+  
+  // getSchedulesForDate를 사용하여 주간 반복 일정과 일회성 일정 병합
+  const mergedSchedules = getSchedulesForDate(
+    targetDate,
+    rawWeeklySchedules,
+    oneTimeSchedules
+  );
+  
+  console.log('Selected date:', selectedDate);
+  console.log('Merged schedules:', mergedSchedules.map(s => ({ id: s.id, date: s.date, title: s.title, isRoutine: s.isRoutine })));
+  
+  return mergedSchedules;
+}, [selectedDate, rawWeeklySchedules, oneTimeSchedules]);
 
 
  const isCurrent = useCallback((item: ApiSchedule) => {
    if (!item.date || !item.startTime || !item.endTime) return false;
    try {
        const now = getKoreanTime().getTime();
-       // 시간대 오프셋(+09:00)을 명시적으로 추가
        const startTime = new Date(`${item.date}T${item.startTime}+09:00`).getTime();
        const endTime = new Date(`${item.date}T${item.endTime}+09:00`).getTime();
        if (isNaN(startTime) || isNaN(endTime)) return false;
@@ -99,29 +154,39 @@ const WeeklySchedule = () => {
    }
  }, [getKoreanTime]);
 
- const isToday = useCallback((dayIndex: number) =>
-     dayIndex === getKoreanTime().getDay(),
- [getKoreanTime]);
-
  const handleDeleteConfirm = useCallback(() => {
    if (deleteTarget) {
-     deleteSchedule(deleteTarget.id);
+     // 일 단위 일정만 삭제
+       deleteSchedule(deleteTarget.id);
      setDeleteTarget(null);
    }
  }, [deleteTarget, deleteSchedule]);
 
  const handleOpenAddModal = useCallback(() => {
-   const targetDate = getDateStringForSelectedDay(selectedDay);
-   setAddModalDate(targetDate);
    setIsAddModalOpen(true);
- }, [selectedDay, getDateStringForSelectedDay]);
+ }, []);
+
+ const handlePressSchedule = useCallback((item: ApiSchedule) => {
+   setSelectedSchedule(item);
+   setIsDetailModalOpen(true);
+ }, []);
+
+ const handleEditSchedule = useCallback(() => {
+   if (selectedSchedule) {
+     setIsDetailModalOpen(false);
+     setIsEditModalOpen(true);
+   }
+ }, [selectedSchedule]);
 
  // 렌더링
  const renderScheduleItem = useCallback(({ item }: { item: ApiSchedule }) => {
    const current = isCurrent(item);
 
    return (
-     <View style={[styles.scheduleBox, current && styles.currentBox]}>
+     <TouchableOpacity
+       style={[styles.scheduleBox, current && styles.currentBox]}
+       onPress={() => handlePressSchedule(item)}
+     >
        <View style={styles.scheduleContent}>
          <View style={styles.scheduleInfo}>
            <Text style={[styles.scheduleText, current && styles.currentText]}>
@@ -138,112 +203,52 @@ const WeeklySchedule = () => {
            style={styles.deleteBtn}
            onPress={() => setDeleteTarget(item)}
          >
-           <Text style={styles.deleteBtnText}>🗑️{'\n'}삭제</Text>
+           <Text style={styles.deleteBtnText}>지울래요</Text>
          </TouchableOpacity>
        </View>
-     </View>
+     </TouchableOpacity>
    );
- }, [isCurrent]); 
+ }, [isCurrent, handlePressSchedule]); 
 
+ // 선택된 날짜 정보
+ const selectedDateObj = useMemo(() => {
+   const [year, month, day] = selectedDate.split('-').map(Number);
+   return new Date(year, month - 1, day);
+ }, [selectedDate]);
 
- if (loading) {
-     return (
-         <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-             <ActivityIndicator size="large" color="#FFC364" />
-         </View>
-     );
- }
+ const selectedDateLabel = useMemo(() => {
+   const date = selectedDateObj;
+   const monthNames = ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월'];
+   const weekdayNames = ['일요일', '월요일', '화요일', '수요일', '목요일', '금요일', '토요일'];
+   return `${date.getFullYear()}년 ${monthNames[date.getMonth()]} ${date.getDate()}일 ${weekdayNames[date.getDay()]}`;
+ }, [selectedDateObj]);
+
+if (loading) {
+    return (
+        <View style={[styles.container, styles.loadingContainer]}>
+            <ActivityIndicator size="large" color="#FFC364" />
+        </View>
+    );
+}
 
  return (
    <View style={styles.container}>
      <View style={styles.header}>
        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Text style={styles.backButtonText}>{'< 뒤로'}</Text>
+          <FeatherIcon name="chevron-left" size={28} color="#333" />
        </TouchableOpacity>
 
-       <Text style={styles.title}>📆 일주일 시간표</Text>
-
-       {/* 헤더 공간 균형을 위한 임시 뷰 */}
-       <View style={{ width: 80 }} />
+       <Text style={styles.title}>오늘의 시간표</Text>
      </View>
 
-     {/* 요일 선택 탭 */}
-     <View style={styles.tabContainer}>
-       {/* 첫째 줄 (일~수) */}
-       <View style={styles.tabRow}>
-         {DAYS.slice(0, 4).map((day) => (
-           <TouchableOpacity
-             key={day.key}
-             style={[
-               styles.dayTab,
-               selectedDay === day.key && styles.selectedDayTab,
-               isToday(day.key) && styles.todayTab,
-             ]}
-             onPress={() => setSelectedDay(day.key)}
-           >
-             <Text style={styles.dayEmoji}>{day.emoji}</Text>
-             <Text
-               style={[
-                 styles.dayLabel,
-                 selectedDay === day.key && styles.selectedDayLabel,
-               ]}
-             >
-               {day.label}
-             </Text>
-             {isToday(day.key) && (
-               <View style={styles.todayBadge}>
-                 <Text style={styles.todayBadgeText}>오늘</Text>
-               </View>
-             )}
-           </TouchableOpacity>
-         ))}
-       </View>
-
-       <View style={styles.tabRowCenter}>
-         {DAYS.slice(4, 7).map((day) => (
-           <TouchableOpacity
-             key={day.key}
-             style={[
-               styles.dayTab,
-               selectedDay === day.key && styles.selectedDayTab,
-               isToday(day.key) && styles.todayTab,
-             ]}
-             onPress={() => setSelectedDay(day.key)}
-           >
-             <Text style={styles.dayEmoji}>{day.emoji}</Text>
-             <Text
-               style={[
-                 styles.dayLabel,
-                 selectedDay === day.key && styles.selectedDayLabel,
-               ]}
-             >
-               {day.label}
-             </Text>
-             {isToday(day.key) && (
-               <View style={styles.todayBadge}>
-                 <Text style={styles.todayBadgeText}>오늘</Text>
-               </View>
-             )}
-           </TouchableOpacity>
-         ))}
-       </View>
-     </View>
-
-     {/* 선택된 요일 헤더 */}
-     <View style={styles.selectedDayHeader}>
-       <Text style={styles.selectedDayTitle}>
-         {DAYS[selectedDay].emoji} {DAYS[selectedDay].label} ({getDateStringForSelectedDay(selectedDay).substring(5).replace('-', '/')}) 일정
-       </Text>
+     {/* 선택된 날짜 헤더 */}
+     <View style={styles.selectedDateHeader}>
+       <Text style={styles.selectedDateTitle}>{`${selectedDateLabel} 일정`}</Text>
      </View>
 
      {/* 일정 추가 버튼 */}
-     <TouchableOpacity
-       style={styles.addButton}
-       onPress={handleOpenAddModal}
-     >
-       <Text style={styles.addButtonText}>
-         + {DAYS[selectedDay].label} 할 일 만들기
-       </Text>
+     <TouchableOpacity style={styles.addButton} onPress={handleOpenAddModal}>
+       <Text style={styles.addButtonText}>+ 할 일 만들기</Text>
      </TouchableOpacity>
 
      {/* 일정 목록 */}
@@ -256,7 +261,7 @@ const WeeklySchedule = () => {
            <View style={styles.emptyContainer}>
              <Text style={styles.emptyIcon}>📝</Text>
              <Text style={styles.emptyText}>
-               {getDateStringForSelectedDay(selectedDay).substring(5).replace('-', '/')} {DAYS[selectedDay].label}에 할 일이 없어요
+               {`${selectedDateObj.getMonth() + 1}/${selectedDateObj.getDate()}에 할 일이 없어요`}
              </Text>
              <Text style={styles.emptySubText}>
                '할 일 만들기'를 눌러 새로운 할 일을 적어볼까요?
@@ -270,8 +275,32 @@ const WeeklySchedule = () => {
      <ScheduleModal
        visible={isAddModalOpen}
        onClose={() => setIsAddModalOpen(false)}
-       targetDate={addModalDate ?? getKoreanTime().toString()}
+       targetDate={selectedDate}
      />
+
+     {/* 일정 수정 모달 */}
+     <ScheduleModal
+       visible={isEditModalOpen}
+       onClose={() => {
+         setIsEditModalOpen(false);
+         setSelectedSchedule(null);
+       }}
+       targetDate={selectedSchedule?.date || selectedDate}
+       initialSchedule={selectedSchedule || undefined}
+     />
+
+     {/* 일정 상세 모달 */}
+     {selectedSchedule && (
+       <ScheduleDetailModal
+         visible={isDetailModalOpen}
+         onClose={() => {
+           setIsDetailModalOpen(false);
+           setSelectedSchedule(null);
+         }}
+         schedule={selectedSchedule}
+         onEdit={handleEditSchedule}
+       />
+     )}
 
      {/* 삭제 확인 모달 */}
      <DeleteConfirmModal
@@ -292,111 +321,54 @@ const styles = StyleSheet.create({
    paddingTop: 20,
    backgroundColor: '#FFFFFF',
  },
+ loadingContainer: {
+   justifyContent: 'center',
+   alignItems: 'center',
+ },
  header: {
    paddingBottom: 15,
    alignItems: 'center',
    paddingHorizontal: 20,
    flexDirection: 'row',
-   justifyContent: 'space-between', 
+   justifyContent: 'center',
+   position: 'relative',
  },
-
  backButton: {
-     marginTop:20,
-     padding: 10,
-     marginLeft: -10, 
- },
- backButtonText: {
-     fontSize: 24,
-     fontWeight: 'bold',
-     color: '#4D96FF', 
+     position: 'absolute',
+     left: 20,
+     top: 20,
+     padding: 8,
+     marginLeft: -8,
+     justifyContent: 'center',
+     alignItems: 'center',
+     zIndex: 1,
  },
  title: {
    marginTop:20,
    fontSize: 28, 
    fontWeight: 'bold',
    color: '#333333',
+   textAlign: 'center',
+   flex: 1,
  },
- tabContainer: {
-   paddingHorizontal: 15,
-   marginBottom: 20,
- },
- tabRow: {
-   flexDirection: 'row',
-   justifyContent: 'space-between',
-   marginBottom: 12,
- },
- tabRowCenter: {
-   flexDirection: 'row',
-   justifyContent: 'flex-start',
-   paddingLeft: (Dimensions.get('window').width / 2) - (80*1.5 + 4*3) ,
-   marginBottom: 12,
- },
- dayTab: {
-   width: 80,
-   height: 80,
-   backgroundColor: '#FFFFFF',
-   borderRadius: 20,
-   marginHorizontal: 4,
-   alignItems: 'center',
-   justifyContent: 'center',
-   borderWidth: 2,
-   borderColor: '#DDDDDD',
-   shadowColor: '#000',
-   shadowOffset: { width: 0, height: 2 },
-   shadowOpacity: 0.05,
-   shadowRadius: 3,
-   elevation: 3,
- },
- selectedDayTab: {
-   backgroundColor: '#4D96FF',
-   borderColor: '#4D96FF',
- },
- todayTab: {
-   borderColor: '#FF6B9D',
-   borderWidth: 4,
- },
- dayEmoji: {
-   fontSize: 24,
-   marginBottom: 2,
- },
- dayLabel: {
-   fontSize: 11,
-   fontWeight: 'bold',
-   color: '#333333',
- },
- selectedDayLabel: {
-   color: '#FFFFFF',
- },
- todayBadge: {
-   backgroundColor: '#FF6B9D',
-   borderRadius: 8,
-   paddingHorizontal: 4,
-   paddingVertical: 1,
-   marginTop: 2,
- },
- todayBadgeText: {
-   color: '#FFFFFF',
-   fontSize: 9,
-   fontWeight: 'bold',
- },
- selectedDayHeader: {
+ selectedDateHeader: {
    paddingHorizontal: 20,
-   marginBottom: 15,
+   marginBottom: 10,
  },
- selectedDayTitle: {
-   fontSize: 24,
+ selectedDateTitle: {
+   fontSize: 22,
    fontWeight: 'bold',
    color: '#333333',
  },
  addButton: {
-   backgroundColor: '#4D96FF',
+   backgroundColor: '#FFC364',
    borderRadius: 20,
-   padding: 18,
+   padding: 15,
    marginHorizontal: 20,
-   marginBottom: 15,
+   marginBottom: 12,
    alignItems: 'center',
    borderWidth: 0,
-   shadowColor: '#4D96FF',
+   shadowColor: '#FFC364',
    shadowOffset: { width: 0, height: 4 },
    shadowOpacity: 0.3,
    shadowRadius: 5,
@@ -405,16 +377,17 @@ const styles = StyleSheet.create({
  addButtonText: {
    fontSize: 20,
    fontWeight: 'bold',
-   color: '#FFFFFF',
+   color: '#000000',
  },
  listContainer: {
    flex: 1,
-   backgroundColor: '#F8F8F8',
+   backgroundColor: '#FFFBF0',
    marginHorizontal: 20,
+   marginBottom: 20,
    borderRadius: 20,
-   padding: 15,
-   borderWidth: 1,
-   borderColor: '#E0E0E0',
+   padding: 12,
+   borderWidth: 2,
+   borderColor: '#FFC364',
  },
  scheduleBox: {
    backgroundColor: '#FFFFFF',
@@ -430,8 +403,8 @@ const styles = StyleSheet.create({
    elevation: 2,
  },
  currentBox: {
-   backgroundColor: '#EBF5FF',
-   borderColor: '#4D96FF',
+   backgroundColor: '#FFF5DA',
+   borderColor: '#FFC364',
    borderWidth: 2,
  },
  scheduleContent: {
@@ -462,17 +435,22 @@ const styles = StyleSheet.create({
    color: '#999999',
  },
  deleteBtn: {
-   backgroundColor: '#FF6B9D',
+   backgroundColor: '#FFC364',
    borderRadius: 15,
    padding: 12,
    alignItems: 'center',
    justifyContent: 'center',
    minWidth: 60,
    borderWidth: 0,
+   shadowColor: '#FFC364',
+   shadowOffset: { width: 0, height: 2 },
+   shadowOpacity: 0.3,
+   shadowRadius: 3,
+   elevation: 3,
  },
  deleteBtnText: {
    fontSize: 14,
-   color: '#FFFFFF',
+   color: '#000000',
    fontWeight: 'bold',
    textAlign: 'center',
  },
