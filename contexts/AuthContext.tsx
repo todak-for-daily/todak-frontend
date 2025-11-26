@@ -6,6 +6,8 @@ import {
   saveUserProfile,
   getOnboardingComplete,
   saveOnboardingComplete,
+  logout as logoutApi,
+  fetchBackendUserProfile,
 } from '../services/authApi';
 
 // 사용자 역할 타입
@@ -13,6 +15,7 @@ export type UserRole = '일반 사용자' | '관리자' | '기업 재직자';
 
 // 사용자 프로필 타입
 export interface UserProfile {
+  id?: number; // 관리자 프로필 ID (관리자인 경우에만 사용)
   name: string;
   email: string;
   organization: string;
@@ -93,10 +96,40 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
 
       // 저장된 프로필 정보 로드
-      const savedProfile = await getUserProfile();
+      let savedProfile = await getUserProfile();
       const savedOnboarding = await getOnboardingComplete();
 
-      if (savedProfile) {
+      // 토큰이 mock 토큰인지 확인하여 구글 로그인 여부 판단
+      const isMockToken = token.startsWith('mock_token_');
+      setIsGoogleLogin(!isMockToken);
+
+      // 프로필이 없거나 빈 프로필인 경우, Google 로그인이면 백엔드에서 프로필 가져오기 시도
+      if ((!savedProfile || !savedProfile.email || !savedProfile.name) && !isMockToken) {
+        try {
+          console.log('[checkAuth] 저장된 프로필이 없어 백엔드에서 프로필 가져오기 시도...');
+          const backendProfile = await fetchBackendUserProfile();
+          
+          if (backendProfile) {
+            console.log('[checkAuth] 백엔드 프로필 가져오기 성공:', JSON.stringify(backendProfile, null, 2));
+            // 백엔드 프로필로 프로필 생성
+            savedProfile = {
+              email: backendProfile.email || '',
+              name: backendProfile.name || '',
+              avatarUrl: backendProfile.avatarUrl,
+              role: backendProfile.role,
+              organization: backendProfile.organization || '',
+              organizationUnitId: backendProfile.organizationUnitId,
+            };
+            // 프로필 저장
+            await saveUserProfile(savedProfile);
+            console.log('[checkAuth] 백엔드 프로필 저장 완료');
+          }
+        } catch (error) {
+          console.warn('[checkAuth] 백엔드 프로필 가져오기 실패:', error);
+        }
+      }
+
+      if (savedProfile && savedProfile.email && savedProfile.name) {
         // 저장된 프로필이 있으면 복원
         const normalizedRole = normalizeRole(savedProfile.role, savedProfile.organizationUnitId);
         setUserRole(normalizedRole);
@@ -107,10 +140,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           avatarUrl: savedProfile.avatarUrl,
         });
         setHasCompletedOnboarding(savedOnboarding);
-        
-        // 토큰이 mock 토큰인지 확인하여 구글 로그인 여부 판단
-        const isMockToken = token.startsWith('mock_token_');
-        setIsGoogleLogin(!isMockToken);
       } else {
         // 프로필이 없으면 토큰만 있는 상태 (백엔드에서 사용자 정보 가져오기 필요)
         // 여기서는 토큰만 있고 프로필이 없는 경우는 로그인 화면으로 이동하도록 처리
@@ -171,16 +200,27 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const logout = useCallback(async () => {
     try {
-      // AsyncStorage에서 토큰 및 사용자 정보 삭제
-      await removeAccessToken();
+      // 백엔드 API 호출하여 로그아웃 처리 (리프레시 토큰 쿠키 삭제)
+      // API 호출은 내부에서 토큰 삭제도 처리하므로, 상태만 초기화하면 됨
+      await logoutApi();
       
       // 상태 초기화
-    setUserRole(null);
-    setUserProfile(null);
-    setHasCompletedOnboarding(false);
-    setIsGoogleLogin(false); // 구글 로그인 플래그 초기화
+      setUserRole(null);
+      setUserProfile(null);
+      setHasCompletedOnboarding(false);
+      setIsGoogleLogin(false); // 구글 로그인 플래그 초기화
     } catch (error) {
       console.error('로그아웃 오류:', error);
+      // 에러가 발생해도 로컬 상태는 초기화
+      try {
+        await removeAccessToken();
+      } catch {
+        // 무시
+      }
+      setUserRole(null);
+      setUserProfile(null);
+      setHasCompletedOnboarding(false);
+      setIsGoogleLogin(false);
       throw error;
     }
   }, []);

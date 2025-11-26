@@ -26,6 +26,7 @@ import { ScheduleProvider } from './contexts/ScheduleContext';
 import { WeeklyScheduleProvider } from './contexts/WeeklyScheduleContext';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { AdminProvider } from './contexts/AdminContext';
+import { configureFirebaseMessaging } from './services/pushNotification';
 import React from 'react';
 
 const Stack = createNativeStackNavigator();
@@ -246,6 +247,13 @@ function App() {
       }
     };
     requestGalleryPermission();
+  }, []);
+
+  // FCM 초기화 (앱 시작 시 1회 실행)
+  React.useEffect(() => {
+    configureFirebaseMessaging().catch((error) => {
+      console.error('FCM 초기화 실패:', error);
+    });
   }, []);
 
   return (

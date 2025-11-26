@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Switch, TouchableOpacity, ScrollView, Image, Dimensions, Modal, Alert } from 'react-native';
+import { View, Text, StyleSheet, Switch, TouchableOpacity, ScrollView, Image, Dimensions, Modal, Alert, TextInput, ActivityIndicator } from 'react-native';
 import FeatherIcon from 'react-native-vector-icons/Feather';
 import { useNavigation } from '@react-navigation/native';
 import { useAuth } from '../contexts/AuthContext';
@@ -33,8 +33,8 @@ const ROLE_TEST_PRESETS: Record<
 
 const Settings = () => {
     const navigation = useNavigation<any>();
-    const { userRole, setUserRole, userProfile, updateProfile, logout } = useAuth();
-    const { getMemberByEmail, getOrganizationByMemberEmail, organizations, updateMemberStatus, addMemberTrait, updateMemberTrait, deleteMemberTrait } =
+    const { userRole, setUserRole, userProfile, updateProfile, logout, isGoogleLogin } = useAuth();
+    const { getMemberByEmail, getOrganizationByMemberEmail, organizations, updateMemberStatus, addMemberTrait, updateMemberTrait, deleteMemberTrait, fetchAdminProfile, updateAdminProfileApi, deleteAdminProfileApi } =
         useAdmin();
 
     const [isSoundPreferred, setIsSoundPreferred] = useState(true);
@@ -46,6 +46,13 @@ const Settings = () => {
     const [traitToDelete, setTraitToDelete] = useState<string | null>(null);
     const [isLoggingOut, setIsLoggingOut] = useState(false);
     const [speakingSection, setSpeakingSection] = useState<string | null>(null);
+    const [adminProfileEditModalVisible, setAdminProfileEditModalVisible] = useState(false);
+    const [isLoadingAdminProfile, setIsLoadingAdminProfile] = useState(false);
+    const [isUpdatingAdminProfile, setIsUpdatingAdminProfile] = useState(false);
+    const [adminProfileData, setAdminProfileData] = useState<{ name: string; phone?: string }>({
+        name: userProfile?.name || '',
+        phone: '',
+    });
 
     const memberRecord = useMemo(() => {
         if (!userProfile?.email) return null;
@@ -69,6 +76,38 @@ const Settings = () => {
             }
         }
     }, [userProfile?.email, userProfile?.name, userRole, getMemberByEmail, updateMemberStatus]);
+
+    // 관리자 프로필 조회 (관리자이고 구글 로그인인 경우)
+    useEffect(() => {
+        const loadAdminProfile = async () => {
+            if (userRole === '관리자' && isGoogleLogin && !userProfile?.id) {
+                setIsLoadingAdminProfile(true);
+                try {
+                    const profile = await fetchAdminProfile();
+                    if (profile?.id) {
+                        // 프로필 ID 저장
+                        updateProfile({ id: profile.id });
+                        // 프로필 데이터 초기화
+                        setAdminProfileData({
+                            name: profile.name || userProfile?.name || '',
+                            phone: profile.phone || '',
+                        });
+                    }
+                } catch (error) {
+                    console.error('관리자 프로필 조회 실패:', error);
+                } finally {
+                    setIsLoadingAdminProfile(false);
+                }
+            } else if (userProfile?.name) {
+                // 이미 로드된 프로필로 초기화
+                setAdminProfileData({
+                    name: userProfile.name,
+                    phone: '',
+                });
+            }
+        };
+        loadAdminProfile();
+    }, [userRole, isGoogleLogin, userProfile?.id, userProfile?.name, fetchAdminProfile, updateProfile]);
 
     const showSafetyModalOnWorkTab = useMemo(() => {
         return memberRecord?.showSafetyModalOnWorkTab !== false; // 기본값은 true
@@ -104,6 +143,43 @@ const Settings = () => {
         if (memberRecord?.email) {
             updateMemberStatus(memberRecord.email, { avatarUrl: uri });
         }
+        // 관리자인 경우 프로필 업데이트 시 관리자 프로필도 업데이트
+        if (userRole === '관리자' && isGoogleLogin && userProfile?.id) {
+            handleUpdateAdminProfile({ avatarUrl: uri });
+        }
+    };
+
+    // 관리자 프로필 수정 핸들러
+    const handleUpdateAdminProfile = async (updates: { name?: string; phone?: string; avatarUrl?: string }) => {
+        if (!userProfile?.id || !isGoogleLogin) {
+            return;
+        }
+
+        setIsUpdatingAdminProfile(true);
+        try {
+            const updatedProfile = await updateAdminProfileApi(userProfile.id, updates);
+            if (updatedProfile) {
+                // 로컬 프로필도 업데이트
+                const profileUpdates: any = {};
+                if (updatedProfile.name) profileUpdates.name = updatedProfile.name;
+                if (updatedProfile.phone) profileUpdates.phone = updatedProfile.phone;
+                const responseAvatarUrl = updatedProfile.avatarUrl || (updatedProfile as any).avartarUrl;
+                if (responseAvatarUrl) profileUpdates.avatarUrl = responseAvatarUrl;
+                
+                updateProfile(profileUpdates);
+                setAdminProfileData({
+                    name: updatedProfile.name || adminProfileData.name,
+                    phone: updatedProfile.phone || adminProfileData.phone,
+                });
+                Alert.alert('성공', '프로필이 수정되었습니다.');
+                setAdminProfileEditModalVisible(false);
+            }
+        } catch (error) {
+            console.error('관리자 프로필 수정 실패:', error);
+            Alert.alert('오류', error instanceof Error ? error.message : '프로필 수정 중 오류가 발생했습니다.');
+        } finally {
+            setIsUpdatingAdminProfile(false);
+        }
     };
 
     // 행동 습관 관리 함수들
@@ -135,8 +211,8 @@ const Settings = () => {
         setTraitToDelete(null);
     };
 
-    // 관리자도 자신의 행동 습관을 수정할 수 있도록 변경
-    const canEditTraits = userRole === '일반 사용자' || userRole === '기업 재직자' || userRole === '관리자';
+    // 일반 사용자와 기업 재직자만 행동 특성을 관리할 수 있음 (관리자는 제외)
+    const canEditTraits = userRole === '일반 사용자' || userRole === '기업 재직자';
     const sortedTraits = useMemo(() => {
         if (!memberRecord?.traits) return [];
         return [...memberRecord.traits].sort((a, b) => {
@@ -203,6 +279,81 @@ const Settings = () => {
                         </TouchableOpacity>
                     </View>
                 </View>
+
+                {/* 관리자 프로필 수정 섹션 (관리자이고 구글 로그인인 경우) */}
+                {userRole === '관리자' && isGoogleLogin && (
+                    <View style={styles.card}>
+                        <View style={styles.cardHeader}>
+                            <Text style={styles.sectionTitle}>관리자 프로필 관리</Text>
+                            <View style={styles.cardHeaderActions}>
+                                <TouchableOpacity
+                                    style={styles.addButton}
+                                    onPress={() => {
+                                        // 모달 열 때 현재 프로필 정보로 초기화
+                                        setAdminProfileData({
+                                            name: userProfile?.name || '',
+                                            phone: adminProfileData.phone || '',
+                                        });
+                                        setAdminProfileEditModalVisible(true);
+                                    }}
+                                >
+                                    <Text style={styles.addButtonText}>수정</Text>
+                                </TouchableOpacity>
+                            </View>
+                        </View>
+                        <Text style={styles.description}>
+                            관리자 프로필 정보를 수정하거나 삭제할 수 있어요.
+                        </Text>
+                        {isLoadingAdminProfile ? (
+                            <ActivityIndicator size="small" color="#FFC107" style={{ marginVertical: 10 }} />
+                        ) : (
+                            <View style={styles.adminProfileInfo}>
+                                <Text style={styles.adminProfileText}>이름: {userProfile?.name || '정보 없음'}</Text>
+                                {adminProfileData.phone && (
+                                    <Text style={styles.adminProfileText}>전화번호: {adminProfileData.phone}</Text>
+                                )}
+                            </View>
+                        )}
+                        {userProfile?.id && (
+                            <TouchableOpacity
+                                style={[styles.addButton, { backgroundColor: '#FF4444', marginTop: 10 }]}
+                                onPress={() => {
+                                    Alert.alert(
+                                        '관리자 프로필 삭제',
+                                        '정말 관리자 프로필을 삭제하시겠어요? 이 작업은 되돌릴 수 없어요.',
+                                        [
+                                            { text: '취소', style: 'cancel' },
+                                            {
+                                                text: '삭제',
+                                                style: 'destructive',
+                                                onPress: async () => {
+                                                    try {
+                                                        const success = await deleteAdminProfileApi(userProfile.id!);
+                                                        if (success) {
+                                                            Alert.alert('성공', '관리자 프로필이 삭제되었습니다.');
+                                                            // 로그아웃 처리
+                                                            await logout();
+                                                            navigation.reset({
+                                                                index: 0,
+                                                                routes: [{ name: 'Login' }],
+                                                            });
+                                                        }
+                                                    } catch (error) {
+                                                        console.error('관리자 프로필 삭제 실패:', error);
+                                                        Alert.alert('오류', '프로필 삭제 중 오류가 발생했습니다.');
+                                                    }
+                                                },
+                                            },
+                                        ]
+                                    );
+                                }}
+                            >
+                                <Text style={[styles.addButtonText, { color: '#FFF' }]}>프로필 삭제</Text>
+                            </TouchableOpacity>
+                        )}
+                    </View>
+                )}
+
                 <Text style={styles.headerTitle}>알림 설정</Text>
 
                 <View style={styles.card}>
@@ -417,7 +568,10 @@ const Settings = () => {
                             style={[styles.roleButton, userRole === '일반 사용자' && styles.roleButtonSelected]}
                             onPress={() => {
                                 setUserRole('일반 사용자');
-                                updateProfile(ROLE_TEST_PRESETS['일반 사용자']);
+                                // Google 로그인인 경우 프로필 정보는 유지, mock 로그인만 preset 사용
+                                if (!isGoogleLogin) {
+                                    updateProfile(ROLE_TEST_PRESETS['일반 사용자']);
+                                }
                             }}
                         >
                             <Text style={[styles.roleButtonText, userRole === '일반 사용자' && styles.roleButtonTextSelected]}>
@@ -428,7 +582,10 @@ const Settings = () => {
                             style={[styles.roleButton, userRole === '관리자' && styles.roleButtonSelected]}
                             onPress={() => {
                                 setUserRole('관리자');
-                                updateProfile(ROLE_TEST_PRESETS['관리자']);
+                                // Google 로그인인 경우 프로필 정보는 유지, mock 로그인만 preset 사용
+                                if (!isGoogleLogin) {
+                                    updateProfile(ROLE_TEST_PRESETS['관리자']);
+                                }
                             }}
                         >
                             <Text style={[styles.roleButtonText, userRole === '관리자' && styles.roleButtonTextSelected]}>
@@ -439,7 +596,10 @@ const Settings = () => {
                             style={[styles.roleButton, userRole === '기업 재직자' && styles.roleButtonSelected]}
                             onPress={() => {
                                 setUserRole('기업 재직자');
-                                updateProfile(ROLE_TEST_PRESETS['기업 재직자']);
+                                // Google 로그인인 경우 프로필 정보는 유지, mock 로그인만 preset 사용
+                                if (!isGoogleLogin) {
+                                    updateProfile(ROLE_TEST_PRESETS['기업 재직자']);
+                                }
                             }}
                         >
                             <Text style={[styles.roleButtonText, userRole === '기업 재직자' && styles.roleButtonTextSelected]}>
@@ -513,6 +673,63 @@ const Settings = () => {
                                 onPress={handleConfirmDelete}
                             >
                                 <Text style={styles.modalButtonPrimaryText}>네</Text>
+                            </TouchableOpacity>
+                        </View>
+                    </View>
+                </View>
+            </Modal>
+
+            {/* 관리자 프로필 수정 모달 */}
+            <Modal
+                visible={adminProfileEditModalVisible}
+                transparent
+                animationType="slide"
+                onRequestClose={() => setAdminProfileEditModalVisible(false)}
+            >
+                <View style={styles.modalOverlay}>
+                    <View style={[styles.modalContent, styles.adminProfileModalContent]}>
+                        <Text style={styles.modalTitle}>관리자 프로필 수정</Text>
+                        
+                        <Text style={styles.inputLabel}>이름</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={adminProfileData.name}
+                            onChangeText={(text) => setAdminProfileData({ ...adminProfileData, name: text })}
+                            placeholder="이름을 입력하세요"
+                            editable={!isUpdatingAdminProfile}
+                        />
+
+                        <Text style={styles.inputLabel}>전화번호 (선택)</Text>
+                        <TextInput
+                            style={styles.input}
+                            value={adminProfileData.phone || ''}
+                            onChangeText={(text) => setAdminProfileData({ ...adminProfileData, phone: text })}
+                            placeholder="전화번호를 입력하세요"
+                            keyboardType="phone-pad"
+                            editable={!isUpdatingAdminProfile}
+                        />
+
+                        <View style={styles.modalButtonRow}>
+                            <TouchableOpacity
+                                style={styles.modalButtonSecondary}
+                                onPress={() => setAdminProfileEditModalVisible(false)}
+                                disabled={isUpdatingAdminProfile}
+                            >
+                                <Text style={styles.modalButtonSecondaryText}>취소</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                                style={[styles.modalButtonPrimary, isUpdatingAdminProfile && styles.modalButtonDisabled]}
+                                onPress={() => handleUpdateAdminProfile({
+                                    name: adminProfileData.name,
+                                    phone: adminProfileData.phone,
+                                })}
+                                disabled={isUpdatingAdminProfile || !adminProfileData.name.trim()}
+                            >
+                                {isUpdatingAdminProfile ? (
+                                    <ActivityIndicator size="small" color="#000" />
+                                ) : (
+                                    <Text style={styles.modalButtonPrimaryText}>저장</Text>
+                                )}
                             </TouchableOpacity>
                         </View>
                     </View>
@@ -884,5 +1101,39 @@ const styles = StyleSheet.create({
         color: '#333',
         fontWeight: '700',
         fontSize: 16,
+    },
+    adminProfileModalContent: {
+        maxHeight: '80%',
+    },
+    inputLabel: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#333',
+        marginTop: 12,
+        marginBottom: 6,
+    },
+    input: {
+        borderWidth: 1,
+        borderColor: '#E0E0E0',
+        borderRadius: 8,
+        paddingHorizontal: 12,
+        paddingVertical: 10,
+        fontSize: 15,
+        backgroundColor: '#FFF',
+        marginBottom: 8,
+    },
+    modalButtonDisabled: {
+        opacity: 0.5,
+    },
+    adminProfileInfo: {
+        marginTop: 10,
+        paddingTop: 10,
+        borderTopWidth: 1,
+        borderTopColor: '#F0F0F0',
+    },
+    adminProfileText: {
+        fontSize: 14,
+        color: '#666',
+        marginBottom: 6,
     },
 });

@@ -132,3 +132,7 @@ ios/todak_frontend/Info.plist
 ios/todak_frontend/PrivacyInfo.xcprivacy
 ios/todak_frontend/LaunchScreen.storyboard
 assets/images/package.json
+
+google-services.json
+android/app/google-services.json
+services/firebaseConfig.js

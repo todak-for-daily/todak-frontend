@@ -15,8 +15,14 @@ import { speakText, stopSpeaking } from '../utils/textToSpeech';
 import situationData from '../services/situation_cards.json';
 import { useAuth } from '../contexts/AuthContext';
 import { useAdmin } from '../contexts/AdminContext';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { notifyAdminCriticalEmotion } from '../services/pushNotification';
+import {
+  selectEmotion,
+  recommendActions,
+  getActionDetail,
+  saveFeedback,
+} from '../services/emotionApi';
 
 // 타입 정의
 type SituationCard = {
@@ -183,13 +189,18 @@ const keywordEmojiRules: { keywords: string[]; emoji: string }[] = [
 const { width, height } = Dimensions.get('window');
 
 const AnxietyInputScreen: React.FC = () => {
+  const navigation = useNavigation<any>();
+  const route = useRoute<any>();
+  
+  // route params에서 초기 감정 가져오기 (푸시 알림에서 전달된 경우)
+  const initialMoodFromPush = route.params?.initialMood as { emoji: string; label: string } | undefined;
+  
   const [step, setStep] = useState<Step>('MOOD_SELECT');
   const [isLoading, setIsLoading] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speakingSection, setSpeakingSection] = useState<string | null>(null);
   const { userProfile, userRole } = useAuth();
   const { updateMemberStatus, logMemberEmotion, getOrganizationByMemberEmail } = useAdmin();
-  const navigation = useNavigation<any>();
 
   // 백엔드에 전송할 상태들
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -206,6 +217,8 @@ const AnxietyInputScreen: React.FC = () => {
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [showPositiveModal, setShowPositiveModal] = useState(false);
   const [showRetryModal, setShowRetryModal] = useState(false);
+  const [actionSteps, setActionSteps] = useState<string[]>([]);
+  const [selectedSituationCardId, setSelectedSituationCardId] = useState<string | null>(null);
 
   // TTS 완료 이벤트 리스너
   useEffect(() => {
@@ -218,6 +231,17 @@ const AnxietyInputScreen: React.FC = () => {
       setSpeakingSection(null);
     });
   }, []);
+
+  // 푸시 알림에서 초기 감정이 전달된 경우 자동으로 선택
+  useEffect(() => {
+    if (initialMoodFromPush) {
+      // moodSteps에서 해당 감정 찾기
+      const mood = moodSteps.find(m => m.emoji === initialMoodFromPush.emoji);
+      if (mood) {
+        handleMoodSelect(mood);
+      }
+    }
+  }, [initialMoodFromPush]);
 
   const organization = useMemo(() => {
     if (!userProfile?.email) return null;
@@ -232,10 +256,12 @@ const AnxietyInputScreen: React.FC = () => {
     setStep('MOOD_SELECT');
     setSelectedCategory(null);
     setSelectedSituationText(null);
+    setSelectedSituationCardId(null);
     setSelectedAction(null);
     setInitialMoodEmoji(null);
     setSubSituations([]);
     setRecommendedActions([]);
+    setActionSteps([]);
     setShowFeedbackModal(false);
     setShowPositiveModal(false);
   };
@@ -252,16 +278,31 @@ const AnxietyInputScreen: React.FC = () => {
   };
 
   // 초기 기분 선택 핸들러
-  const handleMoodSelect = (mood: { emoji: string; label: string; isPositive: boolean }) => {
+  const handleMoodSelect = async (mood: { emoji: string; label: string; isPositive: boolean }) => {
     // 초기 기분 저장
     setInitialMoodEmoji(mood.emoji);
     
-    if (mood.isPositive) {
-      // 괜찮은 기분 선택 시 모달 표시
-      setShowPositiveModal(true);
-    } else {
-      // 안 괜찮은 기분 선택 시 불안감정 입력으로 진행
-      setStep('CATEGORY_SELECT');
+    try {
+      // 감정 선택 API 호출
+      const response = await selectEmotion({
+        emotionCard: mood.label, // "괜찮아요", "힘들어요" 등
+      });
+
+      if (response.nextStep === 'end') {
+        // 괜찮은 기분 선택 시 종료
+        setShowPositiveModal(true);
+      } else {
+        // 안 괜찮은 기분 선택 시 불안감정 입력으로 진행
+        setStep('CATEGORY_SELECT');
+      }
+    } catch (error) {
+      console.error('감정 선택 API 오류:', error);
+      // 에러 발생 시 기존 로직 따름
+      if (mood.isPositive) {
+        setShowPositiveModal(true);
+      } else {
+        setStep('CATEGORY_SELECT');
+      }
     }
   };
 
@@ -288,43 +329,74 @@ const AnxietyInputScreen: React.FC = () => {
     setStep('ACTION_SELECT');
   };
 
-  // AI 행동 추천 가져오기 (시뮬레이션)
+  // AI 행동 추천 가져오기
   const fetchRecommendedActions = async () => {
+    if (!selectedSituationCardId) {
+      console.error('상황 카드 ID가 없습니다.');
+      return;
+    }
+
     setIsLoading(true);
 
-    // API 호출 시뮬레이션
-    setTimeout(async () => {
-      try {
-        // --- 임시 데이터 ---
-        const mockActions: RecommendedAction[] = [
-          {
-            action: '이어폰이나 귀마개를 끼기',
-            emojis: '🎧',
-          },
-          {
-            action: '잠깐 조용한 곳으로 이동하기',
-            emojis: '🚶',
-          },
-          {
-            action: '입으로 천천히 숨쉬기',
-            emojis: '😮💨',
-          },
-        ];
-        setRecommendedActions(mockActions);
-        // --- 임시 데이터 끝 ---
-      } catch (error) {
-        console.error('AI Recommendation API error:', error);
-        // 에러 시 기본 행동 추천
+    try {
+      // 행동 추천 API 호출
+      const response = await recommendActions({
+        situationCardId: selectedSituationCardId,
+      });
+
+      // 응답 검증
+      if (!response || !response.recommendedActions || !Array.isArray(response.recommendedActions)) {
+        console.error('행동 추천 응답 형식 오류:', response);
+        throw new Error('행동 추천 응답이 올바르지 않습니다.');
+      }
+
+      // 응답을 RecommendedAction 형식으로 변환
+      // 행동 텍스트에 맞는 이모지 매핑
+      const actionEmojiMap: { [key: string]: string } = {
+        '이어폰이나 귀마개를 끼기': '🎧',
+        '잠깐 조용한 곳으로 이동하기': '🚶',
+        '입으로 천천히 숨쉬기': '😮💨',
+        '짧은 스트레칭 하기': '🤸',
+        '물 한 잔 마시기': '💧',
+        '5분 명상하기': '🧘',
+        '잠시 휴식하기': '🧘',
+        '편안한 자세로 앉기': '🪑',
+        '심호흡하기': '🫁',
+      };
+      
+      const actions: RecommendedAction[] = response.recommendedActions
+        .filter((actionText): actionText is string => typeof actionText === 'string' && actionText.trim().length > 0)
+        .map((actionText) => {
+          return {
+            action: actionText,
+            emojis: actionEmojiMap[actionText] || '🧘',
+          };
+        });
+
+      // 최소 1개 이상의 행동이 있어야 함
+      if (actions.length === 0) {
+        console.warn('행동 추천이 비어있어 기본 행동을 사용합니다.');
         setRecommendedActions([
           { action: '잠시 휴식하기', emojis: '🧘' },
           { action: '편안한 자세로 앉기', emojis: '🪑' },
           { action: '심호흡하기', emojis: '🫁' },
         ]);
-      } finally {
-        setIsLoading(false);
-        setStep('ACTION_SELECT');
+      } else {
+        setRecommendedActions(actions);
       }
-    }, 1500); // 딜레이 시뮬레이션
+      setStep('ACTION_SELECT');
+    } catch (error) {
+      console.error('AI 행동 추천 API 오류:', error);
+      // 에러 시 기본 행동 추천
+      setRecommendedActions([
+        { action: '잠시 휴식하기', emojis: '🧘' },
+        { action: '편안한 자세로 앉기', emojis: '🪑' },
+        { action: '심호흡하기', emojis: '🫁' },
+      ]);
+      setStep('ACTION_SELECT');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // 대분류 선택 핸들러
@@ -334,6 +406,7 @@ const AnxietyInputScreen: React.FC = () => {
     // "모르겠어요" (MISC) 카테고리는 소분류 선택을 건너뛰고 바로 행동 추천으로 이동
     if (categoryKey === 'MISC') {
       setSelectedSituationText('모르겠어요');
+      setSelectedSituationCardId('MISC-01'); // MISC 카테고리의 ID 설정
       setSubSituations([]);
       fetchRecommendedActions();
       return;
@@ -350,19 +423,50 @@ const AnxietyInputScreen: React.FC = () => {
   // 소분류(상황) 선택 핸들러
   const handleSituationSelect = (situation: SituationCard) => {
     setSelectedSituationText(situation.text);
+    setSelectedSituationCardId(situation.id); // 상황 카드 ID 저장
     setShowConfirmModal(true);
   };
 
   // 확인 모달에서 다음 버튼 클릭
   const handleConfirmNext = () => {
     setShowConfirmModal(false);
+    // selectedSituationCardId가 없으면 에러 방지
+    if (!selectedSituationCardId) {
+      console.error('상황 카드 ID가 없어 행동 추천을 가져올 수 없습니다.');
+      return;
+    }
     fetchRecommendedActions();
   };
 
   // 행동 선택 핸들러
-  const handleActionSelect = (action: RecommendedAction) => {
+  const handleActionSelect = async (action: RecommendedAction) => {
     setSelectedAction(action);
-    setStep('ACTION_DETAIL');
+    setIsLoading(true);
+    
+    try {
+      // 행동 상세 정보 API 호출
+      const response = await getActionDetail({
+        selectedAction: action.action,
+        selectedEmojis: action.emojis,
+      });
+
+      // 응답 검증
+      if (!response || !response.actionSteps || !Array.isArray(response.actionSteps)) {
+        console.error('행동 상세 응답 형식 오류:', response);
+        // 기본 단계 사용
+        setActionSteps(['선택한 행동을 천천히 따라해 보세요.']);
+      } else {
+        setActionSteps(response.actionSteps);
+      }
+      setStep('ACTION_DETAIL');
+    } catch (error) {
+      console.error('행동 상세 조회 API 오류:', error);
+      // 에러 발생 시 기본 단계 사용
+      setActionSteps(['선택한 행동을 천천히 따라해 보세요.']);
+      setStep('ACTION_DETAIL');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // 행동 완료 핸들러
@@ -371,27 +475,69 @@ const AnxietyInputScreen: React.FC = () => {
   };
 
   // 피드백 선택 핸들러
-  const handleFeedbackSelect = (feedbackEmoji: string) => {
+  const handleFeedbackSelect = async (feedbackEmoji: string) => {
     setShowFeedbackModal(false);
 
-    if (userRole === '기업 재직자' && userProfile?.email) {
-      const timestamp = new Date().toISOString();
-      logMemberEmotion(userProfile.email, {
-        id: `${timestamp}-${Math.random()}`,
-        feeling: feedbackEmoji,
-        initialMood: initialMoodEmoji || null,
-        situationText: selectedSituationText,
-        feedback: feedbackEmoji,
-        category: selectedCategory || null,
-        categoryLabel: selectedCategory ? mainCategories[selectedCategory] || null : null,
-        action: selectedAction?.action || null,
-        actionEmojis: selectedAction?.emojis || null,
-        createdAt: timestamp,
+    // 피드백 이모지를 라벨로 변환 (API에 전송하기 위해)
+    const feedbackLabel = feedbackEmojis.find(f => f.emoji === feedbackEmoji)?.label || feedbackEmoji;
+
+    try {
+      // 피드백 저장 API 호출
+      const response = await saveFeedback({
+        afterEmotion: feedbackLabel, // "괜찮아요", "힘들어요" 등
       });
-      updateMemberStatus(userProfile.email, {
-        lastEmotion: feedbackEmoji,
-        lastEmotionAt: timestamp,
-      });
+
+      // API 응답 검증
+      if (!response) {
+        console.error('피드백 저장 응답이 없습니다.');
+        throw new Error('피드백 저장 응답이 없습니다.');
+      }
+
+      // API 응답이 COMPLETE이면 완료 처리
+      if (response.nextStep === 'COMPLETE') {
+        // 로컬 상태 업데이트
+        if (userRole === '기업 재직자' && userProfile?.email) {
+          const timestamp = new Date().toISOString();
+          logMemberEmotion(userProfile.email, {
+            id: `${timestamp}-${Math.random()}`,
+            feeling: feedbackEmoji,
+            initialMood: initialMoodEmoji || null,
+            situationText: selectedSituationText,
+            feedback: feedbackEmoji,
+            category: selectedCategory || null,
+            categoryLabel: selectedCategory ? mainCategories[selectedCategory] || null : null,
+            action: selectedAction?.action || null,
+            actionEmojis: selectedAction?.emojis || null,
+            createdAt: timestamp,
+          });
+          updateMemberStatus(userProfile.email, {
+            lastEmotion: feedbackEmoji,
+            lastEmotionAt: timestamp,
+          });
+        }
+      }
+    } catch (error) {
+      console.error('피드백 저장 API 오류:', error);
+      // 에러 발생해도 로컬 상태는 업데이트
+      if (userRole === '기업 재직자' && userProfile?.email) {
+        const timestamp = new Date().toISOString();
+        logMemberEmotion(userProfile.email, {
+          id: `${timestamp}-${Math.random()}`,
+          feeling: feedbackEmoji,
+          initialMood: initialMoodEmoji || null,
+          situationText: selectedSituationText,
+          feedback: feedbackEmoji,
+          category: selectedCategory || null,
+          categoryLabel: selectedCategory ? mainCategories[selectedCategory] || null : null,
+          action: selectedAction?.action || null,
+          actionEmojis: selectedAction?.emojis || null,
+          createdAt: timestamp,
+        });
+        updateMemberStatus(userProfile.email, {
+          lastEmotion: feedbackEmoji,
+          lastEmotionAt: timestamp,
+        });
+      }
     }
 
     // 초기 기분과 최종 피드백 비교
@@ -535,39 +681,11 @@ const getEmojiForSituation = (situation?: SituationCard | null): string | { main
       return;
     }
 
-    const actionDetails: { [key: string]: { title: string; instructions: string[] } } = {
-      '이어폰이나 귀마개를 끼기': {
-        title: '이어폰이나 귀마개를 끼기',
-        instructions: [
-          '주변 소리를 차단할 수 있는 이어폰이나 귀마개를 준비하세요.',
-          '편안하게 착용하세요.',
-          '조용한 음악을 들으면 더 편안해질 수 있어요.',
-        ],
-      },
-      '잠깐 조용한 곳으로 이동하기': {
-        title: '잠깐 조용한 곳으로 이동하기',
-        instructions: [
-          '하던 일을 잠깐 멈추고, 어깨에 힘을 빼기',
-          '조용한 곳으로 천천히 이동하기',
-          '편안한 자세로 1-2분 휴식하기',
-        ],
-      },
-      '입으로 천천히 숨쉬기': {
-        title: '입으로 천천히 숨쉬기',
-        instructions: [
-          '하던 일을 잠깐 멈추고, 어깨에 힘을 빼기',
-          '입을 작게 벌리고 "후-"하며 천천히 4초 동안 숨을 내쉬기',
-          '코로 천천히 3초 동안 숨을 들이마시기',
-        ],
-      },
-    };
+    const instructions = actionSteps.length > 0 
+      ? actionSteps 
+      : ['선택한 행동을 천천히 따라해 보세요.'];
 
-    const detail = actionDetails[selectedAction.action] || {
-      title: selectedAction.action,
-      instructions: ['선택한 행동을 천천히 따라해 보세요.'],
-    };
-
-    const fullText = `${detail.title}. ${detail.instructions.map((inst, idx) => `${idx + 1}번째. ${inst}`).join('. ')}`;
+    const fullText = `${selectedAction.action}. ${instructions.map((inst, idx) => `${idx + 1}번째. ${inst}`).join('. ')}`;
     setIsSpeaking(true);
     setSpeakingSection(speakingKey);
     await speakText(fullText);
@@ -755,37 +873,43 @@ const getEmojiForSituation = (situation?: SituationCard | null): string | { main
         <Text style={styles.title}>무엇을 하면 편해질까요?</Text>
         <Text style={styles.subtitle}>원하는 행동을 선택하세요!</Text>
         <ScrollView contentContainerStyle={styles.actionListContainer}>
-          {recommendedActions.map((action, index) => {
-            const speakingKey = `action-${index}`;
-            const isCurrentlySpeaking = isSpeaking && speakingSection === speakingKey;
-            return (
-              <View key={index} style={styles.actionCardContainer}>
-            <TouchableOpacity
-              style={styles.actionCard}
-              onPress={() => handleActionSelect(action)}>
-              <View style={styles.actionCardContent}>
-                <View style={styles.actionEmojiContainer}>
-                  <Text style={styles.actionEmoji}>{action.emojis}</Text>
+          {recommendedActions.length === 0 ? (
+            <View style={styles.emptyActionsContainer}>
+              <Text style={styles.emptyActionsText}>행동 추천을 준비하는 중입니다...</Text>
+            </View>
+          ) : (
+            recommendedActions.map((action, index) => {
+              const speakingKey = `action-${index}`;
+              const isCurrentlySpeaking = isSpeaking && speakingSection === speakingKey;
+              return (
+                <View key={index} style={styles.actionCardContainer}>
+                  <TouchableOpacity
+                    style={styles.actionCard}
+                    onPress={() => handleActionSelect(action)}>
+                    <View style={styles.actionCardContent}>
+                      <View style={styles.actionEmojiContainer}>
+                        <Text style={styles.actionEmoji}>{action.emojis}</Text>
+                      </View>
+                      <View style={styles.actionCardTextContainer}>
+                        <Text style={styles.actionCardText}>{action.action}</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.actionTtsButton}
+                    onPress={() => handleReadAction(action, index)}
+                    activeOpacity={0.7}
+                  >
+                    <FeatherIcon
+                      name={isCurrentlySpeaking ? 'volume-2' : 'volume-1'}
+                      size={14}
+                      color={isCurrentlySpeaking ? '#FFA000' : '#666'}
+                    />
+                  </TouchableOpacity>
                 </View>
-                <View style={styles.actionCardTextContainer}>
-                  <Text style={styles.actionCardText}>{action.action}</Text>
-                </View>
-              </View>
-            </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.actionTtsButton}
-                  onPress={() => handleReadAction(action, index)}
-                  activeOpacity={0.7}
-                >
-                  <FeatherIcon
-                    name={isCurrentlySpeaking ? 'volume-2' : 'volume-1'}
-                    size={14}
-                    color={isCurrentlySpeaking ? '#FFA000' : '#666'}
-                  />
-                </TouchableOpacity>
-              </View>
-            );
-          })}
+              );
+            })
+          )}
         </ScrollView>
       </View>
     );
@@ -795,38 +919,10 @@ const getEmojiForSituation = (situation?: SituationCard | null): string | { main
   const renderActionDetail = () => {
     if (!selectedAction) return null;
 
-    // 행동별 상세 설명 (임시 데이터)
-    const actionDetails: { [key: string]: { title: string; instructions: string[] } } = {
-      '이어폰이나 귀마개를 끼기': {
-        title: '이어폰이나 귀마개를 끼기',
-        instructions: [
-          '주변 소리를 차단할 수 있는 이어폰이나 귀마개를 준비하세요.',
-          '편안하게 착용하세요.',
-          '조용한 음악을 들으면 더 편안해질 수 있어요.',
-        ],
-      },
-      '잠깐 조용한 곳으로 이동하기': {
-        title: '잠깐 조용한 곳으로 이동하기',
-        instructions: [
-          '하던 일을 잠깐 멈추고, 어깨에 힘을 빼기',
-          '조용한 곳으로 천천히 이동하기',
-          '편안한 자세로 1-2분 휴식하기',
-        ],
-      },
-      '입으로 천천히 숨쉬기': {
-        title: '입으로 천천히 숨쉬기',
-        instructions: [
-          '하던 일을 잠깐 멈추고, 어깨에 힘을 빼기',
-          '입을 작게 벌리고 "후-"하며 천천히 4초 동안 숨을 내쉬기',
-          '코로 천천히 3초 동안 숨을 들이마시기',
-        ],
-      },
-    };
-
-    const detail = actionDetails[selectedAction.action] || {
-      title: selectedAction.action,
-      instructions: ['선택한 행동을 천천히 따라해 보세요.'],
-    };
+    // API에서 가져온 actionSteps 사용, 없으면 기본 메시지
+    const instructions = actionSteps.length > 0 
+      ? actionSteps 
+      : ['선택한 행동을 천천히 따라해 보세요.'];
 
     return (
       <View style={styles.container}>
@@ -838,9 +934,6 @@ const getEmojiForSituation = (situation?: SituationCard | null): string | { main
         </View>
         <View style={styles.actionDetailCard}>
           <View style={styles.actionDetailHeader}>
-          <View style={styles.actionDetailEmojiContainer}>
-            <Text style={styles.actionDetailEmoji}>{selectedAction.emojis}</Text>
-            </View>
             <TouchableOpacity
               style={styles.actionDetailTtsButton}
               onPress={handleReadActionDetail}
@@ -853,12 +946,15 @@ const getEmojiForSituation = (situation?: SituationCard | null): string | { main
               />
             </TouchableOpacity>
           </View>
-          <Text style={styles.actionDetailTitle}>{detail.title}</Text>
+          <Text style={styles.actionDetailTitle}>{selectedAction.action}</Text>
+          <View style={styles.actionDetailEmojiLargeContainer}>
+            <Text style={styles.actionDetailEmojiLarge}>{selectedAction.emojis}</Text>
+          </View>
           <Text style={styles.actionDetailSubtitle}>
             밑의 설명을 보고 따라 해 보세요
           </Text>
           <View style={styles.instructionsContainer}>
-            {detail.instructions.map((instruction, index) => (
+            {instructions.map((instruction, index) => (
               <View key={index} style={styles.instructionItem}>
                 <Text style={styles.instructionNumber}>{index + 1}.</Text>
                 <Text style={styles.instructionText}>{instruction}</Text>
@@ -1231,6 +1327,16 @@ const styles = StyleSheet.create({
     width: '100%',
     paddingVertical: 10,
   },
+  emptyActionsContainer: {
+    padding: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyActionsText: {
+    fontSize: 16,
+    color: '#666',
+    textAlign: 'center',
+  },
   actionCardContainer: {
     marginBottom: 15,
     position: 'relative',
@@ -1287,8 +1393,9 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   actionDetailHeader: {
-    alignItems: 'center',
+    alignItems: 'flex-end',
     position: 'relative',
+    marginBottom: 10,
   },
   actionDetailEmojiContainer: {
     width: 150,
@@ -1300,9 +1407,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   actionDetailTtsButton: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
     padding: 8,
     borderRadius: 12,
     backgroundColor: 'rgba(255, 255, 255, 0.9)',
@@ -1310,6 +1414,22 @@ const styles = StyleSheet.create({
   actionDetailEmoji: {
     fontSize: 80,
     textAlign: 'center',
+  },
+  actionDetailEmojiLargeContainer: {
+    width: '100%',
+    minHeight: 120,
+    marginVertical: 20,
+    paddingVertical: 20,
+    paddingHorizontal: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+  },
+  actionDetailEmojiLarge: {
+    fontSize: 64,
+    textAlign: 'center',
+    lineHeight: 80,
   },
   actionDetailTitle: {
     fontSize: 22,

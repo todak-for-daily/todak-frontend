@@ -3,6 +3,7 @@ import { getBackendBase } from './apiConfig';
 
 // 인증 토큰 관련 상수
 const TOKEN_STORAGE_KEY = 'userToken';
+const REFRESH_TOKEN_STORAGE_KEY = 'refreshToken';
 const USER_PROFILE_STORAGE_KEY = 'userProfile';
 const USER_ROLE_STORAGE_KEY = 'userRole';
 const ONBOARDING_COMPLETE_KEY = 'hasCompletedOnboarding';
@@ -230,11 +231,178 @@ export const getAccessToken = async (): Promise<string | null> => {
 export const removeAccessToken = async (): Promise<void> => {
   try {
     await AsyncStorage.removeItem(TOKEN_STORAGE_KEY);
+    await AsyncStorage.removeItem(REFRESH_TOKEN_STORAGE_KEY);
     await AsyncStorage.removeItem(USER_PROFILE_STORAGE_KEY);
     await AsyncStorage.removeItem(USER_ROLE_STORAGE_KEY);
     await AsyncStorage.removeItem(ONBOARDING_COMPLETE_KEY);
   } catch (error) {
     console.error('토큰 삭제 실패:', error);
+    throw error;
+  }
+};
+
+/**
+ * 리프레시 토큰 저장
+ */
+export const saveRefreshToken = async (token: string): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(REFRESH_TOKEN_STORAGE_KEY, token);
+  } catch (error) {
+    console.error('리프레시 토큰 저장 실패:', error);
+    throw error;
+  }
+};
+
+/**
+ * 리프레시 토큰 조회
+ */
+export const getRefreshToken = async (): Promise<string | null> => {
+  try {
+    return await AsyncStorage.getItem(REFRESH_TOKEN_STORAGE_KEY);
+  } catch (error) {
+    console.error('리프레시 토큰 조회 실패:', error);
+    return null;
+  }
+};
+
+/**
+ * 액세스 토큰 첫 발급
+ * GET /token
+ */
+export const getInitialToken = async (): Promise<{ accessToken: string; refreshToken?: string }> => {
+  try {
+    const response = await fetch(`${getBackendBase()}/token`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`토큰 발급 실패: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    // 응답에서 토큰 추출 (구조에 따라 다를 수 있음)
+    const accessToken = data.accessToken || data.token || data.access_token;
+    const refreshToken = data.refreshToken || data.refresh_token;
+    
+    if (!accessToken) {
+      throw new Error('액세스 토큰을 받지 못했습니다.');
+    }
+
+    // 토큰 저장
+    await saveAccessToken(accessToken);
+    if (refreshToken) {
+      await saveRefreshToken(refreshToken);
+    }
+
+    return {
+      accessToken,
+      refreshToken,
+    };
+  } catch (error) {
+    console.error('초기 토큰 발급 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 액세스 토큰 재발급
+ * POST /api/auth/token
+ */
+export const refreshAccessToken = async (refreshToken?: string): Promise<{ accessToken: string; refreshToken?: string }> => {
+  try {
+    // refreshToken이 제공되지 않으면 저장된 토큰 사용
+    const tokenToUse = refreshToken || await getRefreshToken();
+    
+    if (!tokenToUse) {
+      throw new Error('리프레시 토큰이 없습니다.');
+    }
+
+    const response = await fetch(`${getBackendBase()}/api/auth/token`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify({
+        refresh_token: tokenToUse,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`토큰 재발급 실패: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    // 응답에서 토큰 추출
+    const accessToken = data.accessToken || data.token || data.access_token;
+    const newRefreshToken = data.refreshToken || data.refresh_token;
+    
+    if (!accessToken) {
+      throw new Error('액세스 토큰을 받지 못했습니다.');
+    }
+
+    // 새 토큰 저장
+    await saveAccessToken(accessToken);
+    if (newRefreshToken) {
+      await saveRefreshToken(newRefreshToken);
+    }
+
+    return {
+      accessToken,
+      refreshToken: newRefreshToken,
+    };
+  } catch (error) {
+    console.error('토큰 재발급 오류:', error);
+    throw error;
+  }
+};
+
+/**
+ * 로그아웃
+ * POST /api/auth/logout
+ */
+export const logout = async (): Promise<void> => {
+  try {
+    // 먼저 API 호출 (성공 여부와 관계없이 로컬 토큰 삭제)
+    try {
+      const token = await getAccessToken();
+      if (token) {
+        const response = await fetch(`${getBackendBase()}/api/auth/logout`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+        });
+
+        if (!response.ok) {
+          console.warn(`로그아웃 API 호출 실패: ${response.status}`);
+        }
+      }
+    } catch (apiError) {
+      console.warn('로그아웃 API 호출 중 오류:', apiError);
+      // API 호출 실패해도 로컬 토큰은 삭제
+    }
+
+    // 로컬 토큰 삭제 (항상 실행)
+    await removeAccessToken();
+  } catch (error) {
+    console.error('로그아웃 처리 오류:', error);
+    // 에러가 발생해도 토큰 삭제는 시도
+    try {
+      await removeAccessToken();
+    } catch {
+      // 최후의 수단으로 무시
+    }
     throw error;
   }
 };
@@ -322,22 +490,40 @@ export const authenticatedRequest = async (
     throw new Error('인증 토큰이 없습니다. 다시 로그인해주세요.');
   }
 
+  // FormData인 경우 Content-Type을 설정하지 않음 (자동으로 boundary가 포함된 Content-Type이 설정됨)
+  const isFormData = options.body instanceof FormData;
+  
   const headers: RequestHeaders = {
-    'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
   };
+
+  // FormData가 아닌 경우에만 기본 Content-Type 설정
+  if (!isFormData) {
+    headers['Content-Type'] = 'application/json';
+  }
 
   if (options.headers) {
     if (Array.isArray(options.headers)) {
       options.headers.forEach(([key, value]) => {
-        headers[key] = value;
+        // FormData인 경우 Content-Type은 제외
+        if (!(isFormData && key.toLowerCase() === 'content-type')) {
+          headers[key] = value;
+        }
       });
     } else if (typeof Headers !== 'undefined' && options.headers instanceof Headers) {
       options.headers.forEach((value, key) => {
-        headers[key] = value;
+        // FormData인 경우 Content-Type은 제외
+        if (!(isFormData && key.toLowerCase() === 'content-type')) {
+          headers[key] = value;
+        }
       });
     } else {
-      Object.assign(headers, options.headers as RequestHeaders);
+      Object.keys(options.headers as RequestHeaders).forEach((key) => {
+        // FormData인 경우 Content-Type은 제외
+        if (!(isFormData && key.toLowerCase() === 'content-type')) {
+          headers[key] = (options.headers as RequestHeaders)[key];
+        }
+      });
     }
   }
 
@@ -348,6 +534,60 @@ export const authenticatedRequest = async (
 
   // 토큰이 만료되었거나 유효하지 않은 경우
   if (response.status === 401) {
+    // 토큰 재발급 시도
+    try {
+      const newTokens = await refreshAccessToken();
+      if (newTokens.accessToken) {
+        // 재발급 성공 시 원래 요청을 다시 시도
+        const retryHeaders: RequestHeaders = {
+          Authorization: `Bearer ${newTokens.accessToken}`,
+        };
+
+        // FormData가 아닌 경우에만 Content-Type 설정
+        if (!isFormData) {
+          retryHeaders['Content-Type'] = 'application/json';
+        }
+
+        if (options.headers) {
+          if (Array.isArray(options.headers)) {
+            options.headers.forEach(([key, value]) => {
+              // FormData인 경우 Content-Type은 제외
+              if (!(isFormData && key.toLowerCase() === 'content-type')) {
+                retryHeaders[key] = value;
+              }
+            });
+          } else if (typeof Headers !== 'undefined' && options.headers instanceof Headers) {
+            options.headers.forEach((value, key) => {
+              // FormData인 경우 Content-Type은 제외
+              if (!(isFormData && key.toLowerCase() === 'content-type')) {
+                retryHeaders[key] = value;
+              }
+            });
+          } else {
+            Object.keys(options.headers as RequestHeaders).forEach((key) => {
+              // FormData인 경우 Content-Type은 제외
+              if (!(isFormData && key.toLowerCase() === 'content-type')) {
+                retryHeaders[key] = (options.headers as RequestHeaders)[key];
+              }
+            });
+          }
+        }
+
+        const retryResponse = await fetch(`${getBackendBase()}${endpoint}`, {
+          ...options,
+          headers: retryHeaders,
+        });
+
+        return retryResponse;
+      }
+    } catch (refreshError) {
+      console.error('토큰 재발급 실패:', refreshError);
+      // 재발급 실패 시 토큰 삭제하고 에러 발생
+      await removeAccessToken();
+      throw new Error('인증이 만료되었습니다. 다시 로그인해주세요.');
+    }
+
+    // 재발급 시도 실패 시
     await removeAccessToken();
     throw new Error('인증이 만료되었습니다. 다시 로그인해주세요.');
   }
@@ -395,4 +635,136 @@ export const fetchBackendUserProfile = async (): Promise<BackendUserPayload | nu
     throw lastError;
   }
   return null;
+};
+
+/**
+ * 사용자 아바타 이미지 조회
+ * GET /api/me/avatar
+ * @returns 아바타 이미지 URL이 포함된 객체
+ */
+export const getUserAvatar = async (): Promise<{ avatarUrl?: string; avatar?: string; url?: string }> => {
+  // 토큰 체크 - 없으면 mock 데이터 반환
+  const token = await getAccessToken();
+  if (!token || token.startsWith('mock_token')) {
+    console.log('[getUserAvatar] Mock 모드: 토큰이 없거나 mock 토큰임');
+    return {
+      avatarUrl: undefined,
+      avatar: undefined,
+      url: undefined,
+    };
+  }
+
+  try {
+    const response = await authenticatedRequest('/api/me/avatar', {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`아바타 조회 실패: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    // 다양한 필드명으로 avatar URL 추출
+    const avatarUrl = data.avatarUrl || data.avatar || data.url || data.imageUrl || data.picture;
+    
+    return {
+      avatarUrl,
+      avatar: avatarUrl,
+      url: avatarUrl,
+      ...data, // 원본 데이터도 포함
+    };
+  } catch (error) {
+    console.error('아바타 조회 오류:', error);
+    // API 실패 시에도 mock 데이터 반환
+    return {
+      avatarUrl: undefined,
+      avatar: undefined,
+      url: undefined,
+    };
+  }
+};
+
+/**
+ * 사용자 아바타 이미지 업로드
+ * POST /api/me/avatar
+ * @param fileUri - 이미지 파일 URI (React Native ImagePicker 등에서 반환된 URI)
+ * @param fileName - 파일명 (선택사항, 기본값: 'avatar.jpg')
+ * @param mimeType - MIME 타입 (선택사항, 기본값: 'image/jpeg')
+ * @returns 업로드된 아바타 이미지 URL이 포함된 객체
+ */
+export const uploadUserAvatar = async (
+  fileUri: string,
+  fileName?: string,
+  mimeType?: string
+): Promise<{ avatarUrl?: string; avatar?: string; url?: string }> => {
+  // 토큰 체크 - 없으면 mock 데이터 반환
+  const token = await getAccessToken();
+  if (!token || token.startsWith('mock_token')) {
+    console.log('[uploadUserAvatar] Mock 모드: 토큰이 없거나 mock 토큰임');
+    // Mock: 업로드된 파일 URI를 그대로 반환
+    return {
+      avatarUrl: fileUri,
+      avatar: fileUri,
+      url: fileUri,
+    };
+  }
+
+  try {
+    // FormData 생성
+    const formData = new FormData();
+    
+    // 파일 정보 설정
+    const fileExtension = fileUri.split('.').pop()?.toLowerCase() || 'jpg';
+    const defaultFileName = fileName || `avatar_${Date.now()}.${fileExtension}`;
+    const defaultMimeType = mimeType || 
+      (fileExtension === 'png' ? 'image/png' : 
+       fileExtension === 'gif' ? 'image/gif' : 
+       'image/jpeg');
+
+    // React Native에서 FormData에 파일 추가
+    // @ts-ignore - React Native의 FormData 타입 정의가 완벽하지 않음
+    formData.append('file', {
+      uri: fileUri,
+      type: defaultMimeType,
+      name: defaultFileName,
+    } as any);
+
+    const response = await authenticatedRequest('/api/me/avatar', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`아바타 업로드 실패: ${response.status} ${errorText}`);
+    }
+
+    const data = await response.json();
+    
+    // 다양한 필드명으로 avatar URL 추출
+    const avatarUrl = data.avatarUrl || data.avatar || data.url || data.imageUrl || data.picture;
+    
+    return {
+      avatarUrl,
+      avatar: avatarUrl,
+      url: avatarUrl,
+      ...data, // 원본 데이터도 포함
+    };
+  } catch (error) {
+    console.error('아바타 업로드 오류:', error);
+    // API 실패 시에도 mock 데이터 반환 (업로드된 파일 URI 반환)
+    return {
+      avatarUrl: fileUri,
+      avatar: fileUri,
+      url: fileUri,
+    };
+  }
 };

@@ -24,7 +24,7 @@ import FeatherIcon from 'react-native-vector-icons/Feather';
 import ScheduleModal from '../components/ScheduleModal';
 import RoutineScheduleModal from '../components/RoutineScheduleModal';
 import TraitEditModal from '../components/TraitEditModal';
-import { getUnreadChanges, ChangeLog } from '../services/changesApi';
+import { getUnreadChanges, getChanges, ChangeLog } from '../services/changesApi';
 
 type EmployeeStackParamList = {
   EmployeeList: undefined;
@@ -178,7 +178,7 @@ const EmployeeScreen = () => {
       lastSafetyReminderAt: new Date().toISOString(),
       safetyAcknowledged: false,
     });
-    Alert.alert('알림 전송', '안전 수칙 확인 알림을 전송했습니다.');
+    Alert.alert('알림 보냄', '안전 수칙 알림을 보냈어요.');
   };
 
   // 해당 직원의 스케줄 필터링 (이메일 기반, 현재는 모든 스케줄 표시)
@@ -202,7 +202,7 @@ const EmployeeScreen = () => {
     setScheduleModalVisible(true);
   };
 
-  // 선택된 직원의 변경사항 조회
+  // 선택된 직원의 변경사항 조회 (모든 변경사항 조회로 변경하여 읽음 상태 확인)
   useEffect(() => {
     const fetchChanges = async () => {
       if (!selectedEmployee?.id || !isAdmin) {
@@ -211,7 +211,8 @@ const EmployeeScreen = () => {
       }
 
       try {
-        const changes = await getUnreadChanges(selectedEmployee.id);
+        // 모든 변경사항 조회 (읽음/안 읽음 모두)
+        const changes = await getChanges(selectedEmployee.id);
         setChangeLogs(changes);
       } catch (error) {
         console.error('변경사항 조회 오류:', error);
@@ -390,7 +391,7 @@ const EmployeeScreen = () => {
               style={styles.reminderButton}
               onPress={handleSendSafetyReminder}
             >
-              <Text style={styles.reminderButtonText}>안전 수칙 확인 알림 보내기</Text>
+              <Text style={styles.reminderButtonText}>안전 수칙 알림 보내기</Text>
             </TouchableOpacity>
           </View>
 
@@ -543,6 +544,14 @@ const EmployeeScreen = () => {
                   : changeStatus === 'read' 
                   ? styles.scheduleItemRead 
                   : null;
+                
+                // 해당 스케줄의 변경사항 찾기
+                const scheduleChanges = changeLogs.filter(
+                  log => log.category === '근무 스케줄'
+                );
+                const hasChanges = scheduleChanges.length > 0;
+                const readChanges = scheduleChanges.filter(log => log.isRead);
+                const hasReadChanges = readChanges.length > 0;
 
                 return (
                 <TouchableOpacity
@@ -552,11 +561,21 @@ const EmployeeScreen = () => {
                 >
                   <View style={[styles.scheduleColorBar, { backgroundColor: schedule.color || '#FFC107' }]} />
                   <View style={styles.scheduleContent}>
-                    <Text style={styles.scheduleTitle}>{schedule.title}</Text>
+                    <View style={styles.scheduleTitleRow}>
+                      <Text style={styles.scheduleTitle}>{schedule.title}</Text>
+                      {hasChanges && (
+                        <Text style={styles.changedBadge}>변경됨</Text>
+                      )}
+                    </View>
                     <Text style={styles.scheduleTime}>
                       {schedule.dayOfWeek} {schedule.startTime} - {schedule.endTime}
                     </Text>
                     <Text style={styles.scheduleLocation}>{schedule.location}</Text>
+                    {hasReadChanges && (
+                      <Text style={styles.changeReadTime}>
+                        확인: {formatDateTime(readChanges[readChanges.length - 1].changedAt)}
+                      </Text>
+                    )}
                   </View>
                   <FeatherIcon name="chevron-right" size={20} color="#999" />
                 </TouchableOpacity>
@@ -576,6 +595,14 @@ const EmployeeScreen = () => {
                   : changeStatus === 'read' 
                   ? styles.scheduleItemRead 
                   : null;
+                
+                // 해당 스케줄의 변경사항 찾기
+                const scheduleChanges = changeLogs.filter(
+                  log => log.category === '근무 스케줄'
+                );
+                const hasChanges = scheduleChanges.length > 0;
+                const readChanges = scheduleChanges.filter(log => log.isRead);
+                const hasReadChanges = readChanges.length > 0;
 
                 return (
                 <TouchableOpacity
@@ -585,11 +612,21 @@ const EmployeeScreen = () => {
                 >
                   <View style={[styles.scheduleColorBar, { backgroundColor: schedule.color || '#FFC107' }]} />
                   <View style={styles.scheduleContent}>
-                    <Text style={styles.scheduleTitle}>{schedule.title}</Text>
+                    <View style={styles.scheduleTitleRow}>
+                      <Text style={styles.scheduleTitle}>{schedule.title}</Text>
+                      {hasChanges && (
+                        <Text style={styles.changedBadge}>변경됨</Text>
+                      )}
+                    </View>
                     <Text style={styles.scheduleTime}>
                       {schedule.date} {schedule.startTime} - {schedule.endTime}
                     </Text>
                     <Text style={styles.scheduleLocation}>{schedule.location}</Text>
+                    {hasReadChanges && (
+                      <Text style={styles.changeReadTime}>
+                        확인: {formatDateTime(readChanges[readChanges.length - 1].changedAt)}
+                      </Text>
+                    )}
                   </View>
                   <FeatherIcon name="chevron-right" size={20} color="#999" />
                 </TouchableOpacity>
@@ -798,7 +835,7 @@ const EmployeeScreen = () => {
                   updateMemberStatus(selectedEmployee.email, {
                     lastScheduleUpdateAt: new Date().toISOString(),
                   });
-                  Alert.alert('알림 전송', '스케줄 변경 알림을 전송했습니다.');
+                  Alert.alert('알림 보냄', '시간표가 바뀐 것을 알려줬어요.');
                 }
               }}
               initialSchedule={selectedSchedule}
@@ -816,7 +853,7 @@ const EmployeeScreen = () => {
                   updateMemberStatus(selectedEmployee.email, {
                     lastScheduleUpdateAt: new Date().toISOString(),
                   });
-                  Alert.alert('알림 전송', '스케줄 변경 알림을 전송했습니다.');
+                  Alert.alert('알림 보냄', '시간표가 바뀐 것을 알려줬어요.');
                 }
               }}
               targetDate={selectedSchedule.date || new Date().toISOString().split('T')[0]}
@@ -1525,6 +1562,27 @@ const styles = StyleSheet.create({
     color: '#666',
     fontWeight: '600',
     marginRight: 4,
+  },
+  scheduleTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  changedBadge: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FF6B6B',
+    backgroundColor: '#FFE5E5',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  changeReadTime: {
+    fontSize: 11,
+    color: '#4CAF50',
+    marginTop: 4,
+    fontStyle: 'italic',
   },
 });
 

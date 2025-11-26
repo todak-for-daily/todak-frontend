@@ -71,10 +71,14 @@ const RoleSelectionScreen = () => {
 
   const handleRoleSelect = (role: UserRole) => {
     setSelectedRole(role);
-    const preset = ROLE_PROFILE_PRESETS[role];
-    if (preset) {
-      updateProfile(preset);
+    // Google 로그인인 경우, Google에서 받아온 프로필 정보를 유지하고 preset은 사용하지 않음
+    if (!isGoogleLogin) {
+      const preset = ROLE_PROFILE_PRESETS[role];
+      if (preset) {
+        updateProfile(preset);
+      }
     }
+    // Google 로그인인 경우는 userProfile을 그대로 유지 (이름, 이메일 등은 이미 Google에서 받아온 값)
   };
 
   const handleNext = async () => {
@@ -115,6 +119,7 @@ const RoleSelectionScreen = () => {
           // 응답 데이터로 프로필 업데이트 (avartarUrl 오타 처리 포함)
           const responseAvatarUrl = adminProfile?.avatarUrl || adminProfile?.avartarUrl || avatarUrl || undefined;
           const updatedProfile = {
+            id: adminProfile?.id, // 관리자 프로필 ID 저장
             name: adminProfile?.name || name,
             email: adminProfile?.email || email,
             organization: userProfile?.organization || '',

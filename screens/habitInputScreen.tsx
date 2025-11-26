@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import ProfilePhotoPicker, { MediaSelection } from '../components/ProfilePhotoPicker';
 import { useAdmin, MemberTrait } from '../contexts/AdminContext';
 import { Picker } from '@react-native-picker/picker';
+import { getHabits, createHabit, updateHabit, deleteHabit } from '../services/habitsApi';
 
 type RootStackParamList = {
   RoleSelection: undefined;
@@ -59,25 +60,42 @@ const HabitInputScreen = () => {
     return getMemberByEmail(userProfile.email);
   }, [getMemberByEmail, userProfile?.email]);
 
+  // 행동 특성 데이터 로드 (API에서 가져오기)
   useEffect(() => {
-    if (currentMember?.traits?.length) {
-      setTraitBlocks(
-        currentMember.traits.map((trait) => ({
-          id: trait.id,
-          situation: trait.situation || '',
-          strategy: trait.strategy || '',
-          traitType: trait.traitType,
-          sense: trait.sense,
-          time: trait.time,
-          place: trait.place,
-          target: trait.target,
-          trigger: trait.trigger,
-          description: trait.description,
-          soothingAction: trait.soothingAction,
-        })),
-      );
-    }
-  }, [currentMember?.traits]);
+    const loadHabits = async () => {
+      try {
+        const habits = await getHabits();
+        if (habits && habits.length > 0) {
+          setTraitBlocks(
+            habits.map((trait) => ({
+              id: trait.id,
+              situation: trait.situation || '',
+              strategy: trait.strategy || '',
+              traitType: trait.traitType,
+              sense: trait.sense,
+              time: trait.time,
+              place: trait.place,
+              target: trait.target,
+              trigger: trait.trigger,
+              description: trait.description,
+              soothingAction: trait.soothingAction,
+            })),
+          );
+        } else {
+          // 데이터가 없으면 기본 블록 하나 유지
+          setTraitBlocks([{ id: '1', situation: '', strategy: '', traitType: undefined }]);
+        }
+      } catch (error) {
+        console.error('행동 특성 로드 오류:', error);
+        // 에러가 발생해도 기본 블록은 유지
+        if (traitBlocks.length === 0) {
+          setTraitBlocks([{ id: '1', situation: '', strategy: '', traitType: undefined }]);
+        }
+      }
+    };
+
+    loadHabits();
+  }, []); // 초기 로드만 수행
 
   useEffect(() => {
     setSelectedPhoto(userProfile?.avatarUrl);
@@ -102,18 +120,29 @@ const HabitInputScreen = () => {
     setDeleteConfirmModalVisible(true);
   };
 
-  const handleConfirmDelete = () => {
+  const handleConfirmDelete = async () => {
     if (!traitToDelete) return;
     
     const blockToDelete = traitBlocks.find((b) => b.id === traitToDelete);
-    if (blockToDelete && userProfile?.email) {
-      // 현재 Member에 있는 trait인지 확인
-      const existingTrait = currentMember?.traits?.find((t) => t.id === traitToDelete);
-      if (existingTrait) {
-        deleteMemberTrait(userProfile.email, traitToDelete);
+    if (blockToDelete) {
+      // 숫자 ID인 경우 (백엔드에서 온 데이터)
+      const habitId = parseInt(traitToDelete, 10);
+      if (!isNaN(habitId)) {
+        try {
+          await deleteHabit(habitId);
+          // 성공하면 로컬 상태에서 제거
+          setTraitBlocks(traitBlocks.filter((block) => block.id !== traitToDelete));
+        } catch (error) {
+          console.error('행동 특성 삭제 오류:', error);
+          Alert.alert('오류', '행동 특성 삭제에 실패했습니다.');
+          return;
+        }
+      } else {
+        // 임시 ID인 경우 (아직 저장되지 않은 데이터) - 로컬에서만 제거
+        setTraitBlocks(traitBlocks.filter((block) => block.id !== traitToDelete));
       }
     }
-    setTraitBlocks(traitBlocks.filter((block) => block.id !== traitToDelete));
+    
     setDeleteConfirmModalVisible(false);
     setTraitToDelete(null);
   };
@@ -191,59 +220,65 @@ const HabitInputScreen = () => {
       return block.situation.trim() && block.strategy.trim();
     });
 
-    // 일반 사용자의 경우 Member가 없을 수 있으므로, Member가 없으면 생성
-    if (!currentMember) {
-      // 일반 사용자를 위한 Member 생성 (organizationId는 null)
-      updateMemberStatus(userProfile.email, {
-        id: Date.now(),
-        email: userProfile.email,
-        name: userProfile.name,
-        organizationId: null,
-        role: (userRole || '일반 사용자') as UserRole,
-        traits: [],
-      });
-    }
-
-    // 기존 traits를 가져오기 (Member가 생성되었는지 다시 확인)
-    const memberAfterUpdate = getMemberByEmail(userProfile.email);
-    const existingTraits = memberAfterUpdate?.traits || [];
-    
-    // 삭제할 traits 찾기 (기존에 있던 것 중 현재 없는 것)
-    existingTraits.forEach((existingTrait) => {
-      const stillExists = validBlocks.some((block) => block.id === existingTrait.id);
-      if (!stillExists) {
-        deleteMemberTrait(userProfile.email, existingTrait.id);
-      }
-    });
-
-    // 추가/업데이트할 traits 처리
-    validBlocks.forEach((block) => {
-      const existingTrait = existingTraits.find((t) => t.id === block.id);
-      const traitData: Partial<Omit<MemberTrait, 'id' | 'lastUpdatedAt'>> = {
-        situation: block.situation.trim() || '',
-        strategy: block.strategy.trim() || '',
-        traitType: block.traitType,
-        sense: block.sense,
-        time: block.time?.trim(),
-        place: block.place?.trim(),
-        target: block.target?.trim(),
-        trigger: block.trigger?.trim(),
-        description: block.description?.trim(),
-        soothingAction: block.soothingAction?.trim(),
-      };
+    try {
+      // 기존 habits 가져오기
+      const existingHabits = await getHabits();
       
-      if (existingTrait) {
-        // 업데이트
-        updateMemberTrait(userProfile.email, block.id, traitData);
-      } else {
-        // 추가
-        addMemberTrait(userProfile.email, traitData);
+      // 삭제할 habits 찾기 (기존에 있던 것 중 현재 없는 것)
+      for (const existingHabit of existingHabits) {
+        const stillExists = validBlocks.some((block) => {
+          const blockId = parseInt(block.id, 10);
+          return !isNaN(blockId) && blockId === existingHabit.id;
+        });
+        if (!stillExists) {
+          try {
+            await deleteHabit(existingHabit.id);
+          } catch (error) {
+            console.error(`행동 특성 삭제 실패 (ID: ${existingHabit.id}):`, error);
+          }
+        }
       }
-    });
 
-    await AsyncStorage.setItem('hasCompletedOnboarding', 'true');
-    completeOnboarding();
-    navigation.replace('Tabs');
+      // 추가/업데이트할 habits 처리
+      for (const block of validBlocks) {
+        const blockId = parseInt(block.id, 10);
+        const isExisting = !isNaN(blockId);
+        
+        const traitData: Partial<Omit<MemberTrait, 'id' | 'lastUpdatedAt'>> = {
+          situation: block.situation.trim() || '',
+          strategy: block.strategy.trim() || '',
+          traitType: block.traitType,
+          sense: block.sense,
+          time: block.time?.trim(),
+          place: block.place?.trim(),
+          target: block.target?.trim(),
+          trigger: block.trigger?.trim(),
+          description: block.description?.trim(),
+          soothingAction: block.soothingAction?.trim(),
+        };
+        
+        try {
+          if (isExisting) {
+            // 업데이트
+            await updateHabit(blockId, traitData);
+          } else {
+            // 추가
+            await createHabit(traitData);
+          }
+        } catch (error) {
+          console.error(`행동 특성 ${isExisting ? '수정' : '생성'} 실패:`, error);
+          Alert.alert('오류', `행동 특성 ${isExisting ? '수정' : '생성'}에 실패했습니다.`);
+          return;
+        }
+      }
+
+      await AsyncStorage.setItem('hasCompletedOnboarding', 'true');
+      completeOnboarding();
+      navigation.replace('Tabs');
+    } catch (error) {
+      console.error('행동 특성 저장 오류:', error);
+      Alert.alert('오류', '행동 특성 저장에 실패했습니다.');
+    }
   };
 
   const handlePhotoSave = (media: MediaSelection) => {
@@ -474,8 +509,8 @@ const HabitInputScreen = () => {
 
         <View style={styles.savedCard}>
           <Text style={styles.savedTitle}>저장된 카드 (관리자가 함께 봐요)</Text>
-          {currentMember?.traits?.length ? (
-            currentMember.traits.map((trait) => (
+          {traitBlocks.length > 0 ? (
+            traitBlocks.map((trait) => (
               <View key={trait.id} style={styles.savedTraitRow}>
                 <View style={styles.savedTraitContent}>
                   {trait.traitType ? (
@@ -523,7 +558,24 @@ const HabitInputScreen = () => {
                 </View>
                 <TouchableOpacity
                   style={styles.savedEditButton}
-                  onPress={() => handleEditTrait(trait)}
+                  onPress={() => {
+                    // trait를 MemberTrait 형식으로 변환하여 수정
+                    const memberTrait: MemberTrait = {
+                      id: trait.id,
+                      situation: trait.situation || '',
+                      strategy: trait.strategy || '',
+                      lastUpdatedAt: new Date().toISOString(),
+                      traitType: trait.traitType,
+                      sense: trait.sense,
+                      time: trait.time,
+                      place: trait.place,
+                      target: trait.target,
+                      trigger: trait.trigger,
+                      description: trait.description,
+                      soothingAction: trait.soothingAction,
+                    };
+                    handleEditTrait(memberTrait);
+                  }}
                 >
                   <Text style={styles.savedEditText}>수정하기</Text>
                 </TouchableOpacity>

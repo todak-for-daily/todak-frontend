@@ -76,7 +76,7 @@ const LoginPage = () => {
       console.warn('[Google Sign-In] .env 파일에 WEB_CLIENT_ID를 추가해주세요.');
       console.warn('[Google Sign-In] 예: WEB_CLIENT_ID=your_client_id_here');
       console.warn('[Google Sign-In] 임시로 기본값 사용');
-      webClientId = 'apps.googleusercontent.com';
+      webClientId = '.apps.googleusercontent.com';
     } else {
       console.log('[Google Sign-In] ✅ 환경 변수에서 WEB_CLIENT_ID 사용');
     }

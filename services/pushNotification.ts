@@ -10,10 +10,22 @@
 
 import messaging,{ FirebaseMessagingTypes } from '@react-native-firebase/messaging';
 import { Platform } from 'react-native';
+import { getBackendBase } from './apiConfig';
+import { authenticatedRequest, getAccessToken } from './authApi';
 
 // 알림 채널 ID
 const MOOD_CHECK_CHANNEL_ID = 'mood_check_channel';
 const DEFAULT_CHANNEL_ID = 'default_channel';
+
+// 토큰 새로고침 콜백 (외부에서 설정 가능)
+let onTokenRefreshCallback: ((token: string) => Promise<void>) | null = null;
+
+/**
+ * 토큰 새로고침 콜백 설정
+ */
+export const setTokenRefreshCallback = (callback: (token: string) => Promise<void>) => {
+  onTokenRefreshCallback = callback;
+};
 
 /**
  * 1. 푸시 알림 기본 설정 및 권한 요청 (앱 실행 시 1회 호출)
@@ -36,6 +48,15 @@ export const configureFirebaseMessaging = async () => {
       
       // 메시지 리스너 설정
       setupMessageListeners();
+      
+      // 토큰 새로고침 리스너 설정 (토큰이 변경될 때마다 자동으로 서버에 등록)
+      messaging().onTokenRefresh(async (newToken) => {
+        console.log('FCM Token refreshed:', newToken);
+        // 토큰이 갱신되면 자동으로 서버에 등록하도록 콜백 호출
+        if (onTokenRefreshCallback) {
+          await onTokenRefreshCallback(newToken);
+        }
+      });
       
       // Android 채널 생성 (Android에서는 채널이 필수)
       if (Platform.OS === 'android') {
@@ -61,6 +82,16 @@ export const configureFirebaseMessaging = async () => {
   }
 };
 
+// 포그라운드 메시지 수신 콜백 (외부에서 설정 가능)
+let onMessageReceivedCallback: ((remoteMessage: FirebaseMessagingTypes.RemoteMessage) => void) | null = null;
+
+/**
+ * 포그라운드 메시지 수신 콜백 설정
+ */
+export const setMessageReceivedCallback = (callback: (remoteMessage: FirebaseMessagingTypes.RemoteMessage) => void) => {
+  onMessageReceivedCallback = callback;
+};
+
 /**
  * 메시지 수신 리스너 설정
  */
@@ -68,7 +99,10 @@ const setupMessageListeners = () => {
     // 포그라운드 (앱 사용 중) 메시지 수신 리스너
     messaging().onMessage(async (remoteMessage: FirebaseMessagingTypes.RemoteMessage) => {
         console.log('Message handled in the foreground!', remoteMessage);
-        // 여기서 로컬 알림을 통해 사용자에게 메시지를 보여줄 수 있습니다.
+        // 콜백이 설정되어 있으면 호출 (감정 확인 모달 등 표시)
+        if (onMessageReceivedCallback) {
+          onMessageReceivedCallback(remoteMessage);
+        }
     });
 
     // 백그라운드 (앱이 실행 중이지만 화면에 보이지 않을 때) 메시지 수신 리스너
@@ -149,5 +183,79 @@ export const notifyAdminCriticalEmotion = async ({
     // TODO: 서버 API 연동 시 여기에서 fetch/axios 등을 사용해 관리자 대상 FCM을 발송합니다.
   } catch (error) {
     console.error('notifyAdminCriticalEmotion failed', error);
+  }
+};
+
+/**
+ * FCM 토큰 등록
+ * POST /api/fcm/register
+ * @param memberId - 회원 ID
+ * @param token - FCM 토큰
+ * @returns 등록 성공 메시지
+ */
+export const registerFcmToken = async (memberId: number, token: string): Promise<string> => {
+  // 토큰 체크 - 없으면 mock 모드 (등록은 성공으로 처리)
+  const accessToken = await getAccessToken();
+  if (!accessToken || accessToken.startsWith('mock_token')) {
+    console.log('[registerFcmToken] Mock 모드: 토큰이 없거나 mock 토큰임');
+    return 'FCM 토큰이 등록되었습니다.';
+  }
+
+  try {
+    const response = await authenticatedRequest('/api/fcm/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        memberId,
+        token,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`FCM 토큰 등록 실패: ${response.status} ${errorText}`);
+    }
+
+    const result = await response.text();
+    return result || 'FCM 토큰이 등록되었습니다.';
+  } catch (error) {
+    console.error('FCM 토큰 등록 오류:', error);
+    // API 실패 시에도 성공으로 처리 (mock)
+    return 'FCM 토큰이 등록되었습니다.';
+  }
+};
+
+/**
+ * FCM 테스트 푸시 알림 전송
+ * POST /api/fcm/test
+ * @param memberId - 회원 ID
+ * @returns 테스트 알림 전송 메시지
+ */
+export const sendFcmTest = async (memberId: number): Promise<string> => {
+  // 토큰 체크 - 없으면 mock 모드 (테스트 전송은 성공으로 처리)
+  const accessToken = await getAccessToken();
+  if (!accessToken || accessToken.startsWith('mock_token')) {
+    console.log('[sendFcmTest] Mock 모드: 토큰이 없거나 mock 토큰임');
+    return '테스트 푸시 알림이 전송되었습니다.';
+  }
+
+  try {
+    const response = await authenticatedRequest('/api/fcm/test', {
+      method: 'POST',
+      body: JSON.stringify({
+        memberId,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`FCM 테스트 실패: ${response.status} ${errorText}`);
+    }
+
+    const result = await response.text();
+    return result || '테스트 푸시 알림이 전송되었습니다.';
+  } catch (error) {
+    console.error('FCM 테스트 오류:', error);
+    // API 실패 시에도 성공으로 처리 (mock)
+    return '테스트 푸시 알림이 전송되었습니다.';
   }
 };

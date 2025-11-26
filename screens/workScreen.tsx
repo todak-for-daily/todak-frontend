@@ -28,6 +28,19 @@ import { subscribeToMoodCheckTopic } from '../services/pushNotification';
 import FeatherIcon from 'react-native-vector-icons/Feather';
 import { ICON_CATALOG, IconKey } from '../constants/iconCatalog';
 import { WorkStackParamList } from '../types/workNavigation';
+import {
+  createOrganization,
+  updateOrganization,
+  deleteOrganization,
+  getOrganizationTree,
+  registerEmployee,
+  getEmployees,
+  getEmployeeDetail,
+  deleteEmployee,
+  CreateOrganizationRequest,
+  UpdateOrganizationRequest,
+  RegisterEmployeeRequest,
+} from '../services/organizationApi';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -115,6 +128,11 @@ const WorkScreen = () => {
   const [selectedTraitMember, setSelectedTraitMember] = useState<Member | null>(null);
   const [editingTrait, setEditingTrait] = useState<MemberTrait | null>(null);
   const [speakingSection, setSpeakingSection] = useState<string | null>(null);
+  const [organizationModalVisible, setOrganizationModalVisible] = useState(false);
+  const [organizationForm, setOrganizationForm] = useState<{
+    name: string;
+    parentId?: number;
+  }>({ name: '', parentId: undefined });
   const profileReminderMode = (userProfile as any)?.reminderMode as ReminderMode | undefined;
   const profileReminderTime = (userProfile as any)?.reminderTime as string | undefined;
   const profileReminderInterval = (userProfile as any)?.reminderIntervalHours as number | undefined;
@@ -397,6 +415,48 @@ const WorkScreen = () => {
     navigation.navigate('WorkManageMembers');
   };
 
+  const handleOpenOrganizationModal = () => {
+    setOrganizationForm({ name: '', parentId: undefined });
+    setOrganizationModalVisible(true);
+  };
+
+  const handleCreateOrganization = async () => {
+    if (!organizationForm.name.trim()) {
+      Alert.alert('입력 오류', '조직 이름을 입력해주세요.');
+      return;
+    }
+
+    if (!safeOrganization) {
+      Alert.alert('오류', '조직 정보를 찾을 수 없습니다.');
+      return;
+    }
+
+    try {
+      const request: CreateOrganizationRequest = {
+        companyId: safeOrganization.id,
+        name: organizationForm.name.trim(),
+        parentId: organizationForm.parentId,
+      };
+
+      await createOrganization(request);
+      
+      Alert.alert('성공', '조직이 등록되었습니다.', [
+        {
+          text: '확인',
+          onPress: () => {
+            setOrganizationModalVisible(false);
+            setOrganizationForm({ name: '', parentId: undefined });
+            // 페이지 재렌더링을 위해 현재 화면으로 다시 이동
+            navigation.replace('WorkHome', route.params);
+          },
+        },
+      ]);
+    } catch (error) {
+      console.error('조직 등록 오류:', error);
+      Alert.alert('오류', '조직 등록에 실패했습니다.');
+    }
+  };
+
 
   const handlePhotoSave = (media: MediaSelection) => {
     const uri = media.uri;
@@ -598,6 +658,9 @@ const WorkScreen = () => {
               <>
               <TouchableOpacity style={styles.iconTap} onPress={handleOpenManageMembers}>
                 <FeatherIcon name="user-plus" size={24} color="#000" />
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.iconTap} onPress={handleOpenOrganizationModal}>
+                <FeatherIcon name="folder-plus" size={24} color="#000" />
               </TouchableOpacity>
               <TouchableOpacity style={styles.iconTap} onPress={() => navigation.navigate('WorkSettings')}>
                 <FeatherIcon name="settings" size={24} color="#000" />
@@ -899,7 +962,7 @@ const WorkScreen = () => {
                 const savedTime = currentMember?.reminderTime ?? profileReminderTime ?? '09:00';
                 const savedIntervalHours = currentMember?.reminderIntervalHours ?? profileReminderInterval ?? 4;
                 const savedHour = savedTime ? parseInt(savedTime.split(':')[0], 10) : 9;
-                const reminderText = `알림 시간 정하기. 기분 적기와 안전 수칙 확인 알림을 언제 받을지 골라요. ${savedMode === 'daily' ? `지금은 매일 ${savedHour.toString().padStart(2, '0')}시에 알림이 울려요.` : `지금은 ${savedIntervalHours}시간마다 알림이 울려요.`}`;
+                const reminderText = `알림 시간 정하기. 기분 적기와 안전 수칙 알림을 언제 받을지 골라요. ${savedMode === 'daily' ? `지금은 매일 ${savedHour.toString().padStart(2, '0')}시에 알림이 울려요.` : `지금은 ${savedIntervalHours}시간마다 알림이 울려요.`}`;
                 setSpeakingSection('reminder');
                 await speakText(reminderText);
               }}
@@ -1264,6 +1327,64 @@ const WorkScreen = () => {
             }}
           />
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* 조직 등록 모달 */}
+      <Modal
+        visible={organizationModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setOrganizationModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <Text style={styles.modalTitle}>조직 등록</Text>
+            
+            <View style={traitModalStyles.fieldGroup}>
+              <Text style={traitModalStyles.fieldLabel}>조직 이름</Text>
+              <TextInput
+                style={traitModalStyles.textField}
+                placeholder="예: 생산관리팀"
+                placeholderTextColor="#999"
+                value={organizationForm.name}
+                onChangeText={(text) => setOrganizationForm((prev) => ({ ...prev, name: text }))}
+              />
+            </View>
+
+            <View style={traitModalStyles.fieldGroup}>
+              <Text style={traitModalStyles.fieldLabel}>상위 조직 ID (선택사항)</Text>
+              <TextInput
+                style={traitModalStyles.textField}
+                placeholder="상위 조직이 있으면 ID를 입력하세요"
+                placeholderTextColor="#999"
+                value={organizationForm.parentId?.toString() || ''}
+                onChangeText={(text) => {
+                  const parentId = text.trim() ? parseInt(text, 10) : undefined;
+                  setOrganizationForm((prev) => ({ ...prev, parentId: isNaN(parentId as number) ? undefined : parentId }));
+                }}
+                keyboardType="numeric"
+              />
+            </View>
+
+            <View style={traitModalStyles.buttonRow}>
+              <TouchableOpacity
+                style={traitModalStyles.cancelButton}
+                onPress={() => {
+                  setOrganizationModalVisible(false);
+                  setOrganizationForm({ name: '', parentId: undefined });
+                }}
+              >
+                <Text style={traitModalStyles.cancelButtonText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={traitModalStyles.saveButton}
+                onPress={handleCreateOrganization}
+              >
+                <Text style={traitModalStyles.saveButtonText}>등록</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
       </Modal>
     </View>
   );
